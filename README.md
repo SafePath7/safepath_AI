@@ -17,17 +17,18 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 ## 로컬 개발 시작
 
 1. Python 3.11 환경을 준비합니다. Windows는 [개발 환경 문서](docs/setup/README.md)를 참고하세요.
-2. 더미 모드 의존성을 설치합니다.
+2. pip을 최신으로 올린 뒤 더미 모드 의존성을 설치합니다. 오래된 pip은 한글 Windows에서 requirements 파일을 읽다가 실패할 수 있습니다.
 
    ```sh
+   python -m pip install --upgrade pip
    pip install -r requirements-dev.txt
    ```
 
-3. `.env.example`을 참고해 환경변수를 설정합니다. 기본값은 더미 모드입니다.
+3. `.env.example`을 `.env`로 복사하고 필요하면 값을 바꿉니다. 기본값은 더미 모드입니다. 서버는 `.env`를 직접 읽지 않으므로 실행할 때 `--env-file .env`를 붙입니다.
 4. 서버를 실행합니다. 기본 주소는 `http://localhost:8000`입니다(백엔드는 8080).
 
    ```sh
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --env-file .env
    ```
 
 5. 다른 터미널에서 수신을 확인합니다.
@@ -38,7 +39,7 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 
 모델 모드로 실행하려면 `pip install -r requirements-models.txt` 후 `AI_LOAD_MODELS=1`로 시작합니다. 첫 실행 때 Whisper와 YAMNet 가중치를 내려받습니다.
 
-테스트는 `pytest`로 실행합니다. 테스트는 더미 모드에서 동작하므로 모델 설치가 필요하지 않습니다.
+테스트는 저장소 루트에서 `pytest`로 실행합니다(`pytest.ini`가 경로를 잡아 줍니다). 테스트는 더미 모드에서 동작하므로 모델 설치가 필요하지 않습니다.
 
 ## API
 
@@ -48,7 +49,7 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 | POST `/analyze` | `multipart/form-data`의 `file` | wav, mp3, m4a 등 오디오 파일 |
 | POST `/analyze/pcm` | `application/octet-stream` 본문 | 16bit little-endian mono PCM. `?sample_rate=` 생략 시 16000 |
 
-`AI_API_KEY`를 설정하면 `/analyze` 계열 요청에 `X-API-Key` 헤더가 필요합니다. 요청·응답 형식은 [API 문서](docs/api/README.md)를 참고하세요.
+`AI_API_KEY`를 설정하면 `/analyze` 계열 요청에 `X-API-Key` 헤더가 필요합니다. 요청 본문이 `AI_MAX_UPLOAD_MB`(기본 10MB)를 넘으면 413입니다. 요청·응답 형식은 [API 문서](docs/api/README.md)를 참고하세요.
 
 ## 프로젝트 구조
 

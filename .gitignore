@@ -9,8 +9,8 @@ venv/
 # 환경변수
 .env
 
-# 모델 캐시·샘플 오디오
-models/
+# 모델 캐시·샘플 오디오 (루트의 models/만 제외, docs/models/ 문서는 추적)
+/models/
 *.wav
 *.mp3
 *.m4a

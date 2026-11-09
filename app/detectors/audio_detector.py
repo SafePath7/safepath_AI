@@ -4,11 +4,15 @@ Whisper(위험 문구) + YAMNet(위험 음향) 병렬 탐지 모듈
 (cap_ai/audio_detector.py에서 옮김)
 """
 
+import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from app import config
+
+log = logging.getLogger("safepath.ai.detector")
 
 # ── 위험 판단 기준 ──────────────────────────────────────────────
 DANGER_KEYWORDS = [
@@ -30,21 +34,32 @@ def load_models() -> dict:
 
     whisper = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
     yamnet = hub.load("https://tfhub.dev/google/yamnet/1")
+    class_names = load_yamnet_class_names(yamnet)
+    missing = [c for c in DANGER_CLASSES if c not in class_names]
+    if missing:
+        # 모델 버전에 따라 이름이 달라지면 해당 클래스는 탐지되지 않으므로 시작 시 알린다.
+        log.warning("YAMNet 클래스 목록에 없는 DANGER_CLASSES: %s", missing)
     return {
         "whisper": whisper,
         "yamnet": yamnet,
-        "yamnet_classes": load_yamnet_class_names(yamnet),
+        "yamnet_classes": class_names,
     }
 
 
 # ── Whisper: 위험 문구 탐지 ─────────────────────────────────────
+_KEYWORDS_NO_SPACE = [re.sub(r"\s+", "", kw) for kw in DANGER_KEYWORDS]
+
+
 def detect_danger_phrase(text: str) -> bool:
-    return any(kw in text for kw in DANGER_KEYWORDS)
+    # Whisper가 "살려 주세요"처럼 띄어 쓸 수 있으므로 공백을 지우고 비교한다.
+    compact = re.sub(r"\s+", "", text)
+    return any(kw in compact for kw in _KEYWORDS_NO_SPACE)
 
 
 def run_whisper(whisper_model, waveform: np.ndarray) -> dict:
     """waveform: 16kHz mono float32. returns {"text", "is_danger"}"""
-    segments, _ = whisper_model.transcribe(waveform, language="ko")
+    # vad_filter: 무음 구간을 건너뛰어 "감사합니다" 같은 환각 출력을 줄인다.
+    segments, _ = whisper_model.transcribe(waveform, language="ko", vad_filter=True)
     text = " ".join(seg.text for seg in segments).strip()
     return {"text": text, "is_danger": detect_danger_phrase(text)}
 

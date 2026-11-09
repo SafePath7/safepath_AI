@@ -10,6 +10,8 @@ AI 서버 수신 확인 스크립트 (표준 라이브러리만 사용)
 3) POST /analyze      : --wav 파일을 지정한 경우 파일 업로드
 """
 
+from __future__ import annotations  # Python 3.9 이하에서도 `str | None` 힌트 허용
+
 import argparse
 import json
 import os

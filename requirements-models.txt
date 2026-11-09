@@ -1,8 +1,7 @@
-# 모델 모드(AI_LOAD_MODELS=1)에 필요. Windows 환경에서 설치 확인 후 버전을 고정한다.
+# Needed for model mode (AI_LOAD_MODELS=1). Pin versions after verifying the install on Windows.
 -r requirements.txt
 faster-whisper
 tensorflow
 tensorflow_hub
 librosa
 pandas
-# webrtcvad  # VAD 선택 사항 — Visual Studio C++ 빌드 도구 필요 시 설치

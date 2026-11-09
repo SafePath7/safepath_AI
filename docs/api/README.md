@@ -7,6 +7,7 @@
 - 기본 주소: `http://localhost:8000`
 - 호출 주체: 백엔드(SDS M-03 세션 모듈). 앱·워치는 AI 서버를 직접 호출하지 않습니다.
 - `AI_API_KEY`가 설정된 경우 `/analyze`, `/analyze/pcm`에 `X-API-Key` 헤더가 필요합니다. 없거나 다르면 401입니다.
+- 요청 본문이 `AI_MAX_UPLOAD_MB`(기본 10MB, 백엔드 미디어 업로드 제한과 동일)를 넘으면 413입니다.
 
 ## GET /health
 
@@ -21,7 +22,7 @@
 워치·폰이 수집한 원시 오디오 청크를 그대로 보냅니다. 워치(`WatchVoiceRecorder`)의 현재 형식은 16kHz, mono, 16bit PCM, 1.5초 청크입니다.
 
 - 본문: `application/octet-stream`, 16bit little-endian PCM 바이트
-- 쿼리: `sample_rate`(선택, 8000~48000, 기본 16000). 16kHz가 아니면 서버에서 리샘플링합니다.
+- 쿼리: `sample_rate`(선택, 8000~48000, 기본 16000). 16kHz가 아니면 모델 모드에서 리샘플링합니다. 더미 모드는 변환 없이 바이트 길이로 `duration_sec`만 계산합니다.
 - 바이트 길이가 홀수이거나 본문이 비면 400입니다.
 
 ```sh
