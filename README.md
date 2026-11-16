@@ -38,7 +38,9 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
    python scripts/send_test.py
    ```
 
-모델 모드로 실행하려면 `pip install -r requirements-models.txt` 후 `AI_LOAD_MODELS=1`로 시작합니다. 첫 실행 때 Whisper와 YAMNet 가중치를 내려받습니다.
+모델 모드로 실행하려면 `pip install -r requirements-models.txt` 후 `AI_LOAD_MODELS=1`로 시작합니다. 첫 실행 때 Whisper·YAMNet·화자 임베딩(ECAPA) 가중치를 내려받습니다.
+
+> **저장소를 새로 받은 팀원(git pull)**: 모델 모드를 쓴다면 `pip install -r requirements-models.txt`를 다시 실행하세요. 11주차에 PyTorch·SpeechBrain이 추가되고 `setuptools<81`이 고정됐습니다. 자세한 내용은 [개발 환경 문서의 "저장소를 새로 받은 뒤"](docs/setup/README.md#저장소를-새로-받은-뒤git-pull-할-일)를 참고하세요. 더미 모드만 쓴다면 할 일이 없습니다.
 
 테스트는 저장소 루트에서 `pytest`로 실행합니다(`pytest.ini`가 경로를 잡아 줍니다). 테스트는 더미 모드에서 동작하므로 모델 설치가 필요하지 않습니다.
 
