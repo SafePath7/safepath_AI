@@ -54,6 +54,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - YAMNet은 `models/tfhub`에 둡니다. 예전처럼 Windows 임시 폴더에 두면 디스크 정리 후 빈 폴더만 남아 `saved_model.pb` 오류가 납니다. 캐시가 깨져 있으면 서버가 자동으로 지우고 다시 받습니다.
 - 실제 모델 테스트: `$env:AI_RUN_MODEL_TESTS = "1"; pytest` (기본 `pytest`는 모델 테스트를 건너뜁니다)
 - 위험 음향 점수 확인·임계값 튜닝: `python scripts\yamnet_check.py <파일 또는 폴더> --chunk 10`
+- 내 녹음으로 워치 경로 모사: `python scripts\simulate_watch.py <녹음 폴더>` → 16kHz WAV 변환, 파일별 Whisper 텍스트·위험 판정, AAC 압축 후 3초 창 파일(`<폴더>oice_debug`) 생성. 이어서 아래 `watch_files_check.py`로 분석합니다.
+- 워치 실녹음 점검: 폰 디버그 빌드의 `files/voice_debug/`에서 받은 `voice_<녹음시각ms>.wav`를 시간순으로 분석합니다. `python scripts\watch_files_check.py <폴더> --stitch out --csv result.csv` (`--no-model`이면 순서·간격만 확인). 파일 하나가 폰이 AI로 보낼 3초 창과 같고, 이웃 파일끼리 2초 겹칩니다. `--stitch`는 구간별 연속 녹음 wav를 만듭니다.
 - 설치가 끝나면 `pip freeze`로 확인한 버전을 `requirements-models.txt`에 고정합니다.
 - mp3·m4a 파일 디코딩에는 ffmpeg가 필요할 수 있습니다. wav와 `/analyze/pcm`은 필요하지 않습니다.
 

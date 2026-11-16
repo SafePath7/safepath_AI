@@ -2,8 +2,8 @@
 SafePath AI 분석 서버 (SDS M-10)
 
 GET  /health        : 서버·모델 상태
-POST /analyze       : 오디오 파일 업로드(wav, mp3, m4a 등) → 위험 판단
-POST /analyze/pcm   : 원시 PCM(16bit LE, mono) 바이트 → 위험 판단 (워치 청크 형식)
+POST /analyze       : 오디오 파일 업로드(폰이 보내는 3초 WAV 등) → 위험도(0~1)·위험 유형
+POST /analyze/pcm   : 원시 PCM(16bit LE, mono) 바이트 → 위험도(0~1)·위험 유형
 POST /voice-profile : 음성 등록 녹음 → 화자 임베딩·평소 음량·피치 (FD-016, voice_profiles 저장값)
 
 AI_LOAD_MODELS=0이면 모델을 올리지 않고 더미 응답을 돌려준다(연동 확인용).
@@ -11,9 +11,10 @@ AI_LOAD_MODELS=0이면 모델을 올리지 않고 더미 응답을 돌려준다(
 
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 
 from app import config
@@ -25,6 +26,9 @@ log = logging.getLogger("safepath.ai")
 models: dict = {}
 
 DUMMY_RESULT = {
+    "risk_score": 0.0,
+    "risk_type": None,
+    "is_danger": False,
     "whisper": {  # 모델 모드와 같은 형식 (audio_detector.voice_result)
         "status": "skipped",  # 더미 모드: 분석하지 않음
         "text": "",
@@ -39,7 +43,6 @@ DUMMY_RESULT = {
         "categories": {"scream": 0.0, "shout": 0.0, "glass_break": 0.0, "impact": 0.0},
         "hits": [],
     },
-    "is_danger": False,
 }
 
 # 더미 모드 음성 프로필: voice_profiles NOT NULL 컬럼을 채울 수 있는 고정값 (연동 확인용, 실제 비교에 쓰면 안 됨)
@@ -99,21 +102,49 @@ async def health():
     }
 
 
-async def run_analysis(waveform, dur: float | None, source: str, received_bytes: int) -> dict:
+def clip_meta(session_id, user_id, seq, captured_at) -> dict:
+    """폰이 청크마다 붙이는 식별 정보. 모두 선택값이며 응답에 그대로 돌려준다(user_id는 로그에만)."""
+    return {"session_id": session_id, "user_id": user_id, "seq": seq, "captured_at": captured_at}
+
+
+async def run_analysis(waveform, dur: float | None, source: str, received_bytes: int,
+                       meta: dict, started: float) -> dict:
     if models and waveform is not None:
         from app.detectors.audio_detector import analyze_clip
 
-        # 추론은 수 초 걸리는 동기 작업이므로 이벤트 루프를 막지 않게 스레드풀에서 돌린다.
+        # 추론은 동기 작업이므로 이벤트 루프를 막지 않게 스레드풀에서 돌린다.
         result = await run_in_threadpool(analyze_clip, models, waveform)
     else:
         result = DUMMY_RESULT
-    log.info("analyze source=%s bytes=%d duration=%s mode=%s is_danger=%s",
-             source, received_bytes, dur, mode(), result["is_danger"])
-    return {"mode": mode(), "received_bytes": received_bytes, "duration_sec": dur, **result}
+    processing_ms = round((time.perf_counter() - started) * 1000)
+    # lag: 녹음 시각 → 분석 완료. 워치·서버 시계 차이가 섞여 있어 참고용(늘어나는지만 본다).
+    lag = int(time.time() * 1000) - meta["captured_at"] if meta["captured_at"] else None
+    log.info("analyze source=%s session=%s user=%s seq=%s bytes=%d duration=%s mode=%s "
+             "risk=%.2f type=%s processing_ms=%d lag_ms=%s",
+             source, meta["session_id"], meta["user_id"], meta["seq"], received_bytes, dur, mode(),
+             result["risk_score"], result["risk_type"], processing_ms, lag)
+    return {
+        "session_id": meta["session_id"],
+        "seq": meta["seq"],
+        "captured_at": meta["captured_at"],
+        "mode": mode(),
+        "received_bytes": received_bytes,
+        "duration_sec": dur,
+        "processing_ms": processing_ms,
+        **result,
+    }
 
 
 @app.post("/analyze", dependencies=[Depends(verify_api_key)])
-async def analyze(file: UploadFile = File(...)):
+async def analyze(
+    file: UploadFile = File(...),
+    session_id: str | None = Form(default=None, max_length=64),
+    user_id: str | None = Form(default=None, max_length=64),
+    seq: int | None = Form(default=None, ge=0),
+    captured_at: int | None = Form(default=None, ge=0),
+):
+    started = time.perf_counter()
+    meta = clip_meta(session_id, user_id, seq, captured_at)
     if not file.filename:
         raise HTTPException(status_code=400, detail="파일이 없습니다.")
     data = await file.read(max_bytes() + 1)
@@ -129,14 +160,20 @@ async def analyze(file: UploadFile = File(...)):
         except Exception as exc:  # 디코딩 실패
             raise HTTPException(status_code=400, detail=f"오디오를 읽을 수 없습니다: {exc}") from exc
         dur = duration_sec(waveform)
-    return await run_analysis(waveform, dur, source=f"file:{file.filename}", received_bytes=len(data))
+    return await run_analysis(waveform, dur, f"file:{file.filename}", len(data), meta, started)
 
 
 @app.post("/analyze/pcm", dependencies=[Depends(verify_api_key)])
 async def analyze_pcm(
     request: Request,
     sample_rate: int | None = Query(default=None, ge=8000, le=48000),
+    session_id: str | None = Query(default=None, max_length=64),
+    user_id: str | None = Query(default=None, max_length=64),
+    seq: int | None = Query(default=None, ge=0),
+    captured_at: int | None = Query(default=None, ge=0),
 ):
+    started = time.perf_counter()
+    meta = clip_meta(session_id, user_id, seq, captured_at)
     data = bytearray()
     async for chunk in request.stream():
         data.extend(chunk)
@@ -156,7 +193,7 @@ async def analyze_pcm(
     if models:
         waveform = await run_in_threadpool(load_pcm16, data, sr)
     dur = pcm16_duration_sec(data, sr)
-    return await run_analysis(waveform, dur, source="pcm", received_bytes=len(data))
+    return await run_analysis(waveform, dur, "pcm", len(data), meta, started)
 
 
 @app.post("/voice-profile", dependencies=[Depends(verify_api_key)])

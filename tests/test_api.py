@@ -42,6 +42,38 @@ def test_dummy_yamnet_matches_model_schema():
     assert DUMMY_RESULT["yamnet"] == empty_sound_result()
 
 
+def test_dummy_risk_matches_model_schema():
+    from app.main import DUMMY_RESULT
+    from app.risk import combine
+
+    assert {k: DUMMY_RESULT[k] for k in ("risk_score", "risk_type", "is_danger")} == combine(
+        DUMMY_RESULT["whisper"], DUMMY_RESULT["yamnet"])
+
+
+def test_analyze_echoes_clip_meta():
+    # 폰이 3초 WAV를 1초마다 보낼 때 붙이는 식별 정보를 그대로 돌려줘야 응답을 요청과 짝지을 수 있다
+    form = {"session_id": "s-1", "user_id": "7", "seq": "12", "captured_at": "1763280000000"}
+    with TestClient(app) as c:
+        r = c.post("/analyze", files={"file": ("clip.wav", b"RIFF0000", "audio/wav")}, data=form)
+        p = c.post("/analyze/pcm", params=form, content=PCM_1_5S)
+    for body in (r.json(), p.json()):
+        assert body["session_id"] == "s-1" and body["seq"] == 12 and body["captured_at"] == 1763280000000
+        assert "user_id" not in body
+        assert body["risk_score"] == 0.0 and body["risk_type"] is None
+        assert isinstance(body["processing_ms"], int)
+
+
+def test_analyze_without_meta_still_works():
+    with TestClient(app) as c:
+        body = c.post("/analyze/pcm", content=PCM_1_5S).json()
+    assert body["session_id"] is None and body["seq"] is None
+
+
+def test_analyze_rejects_bad_seq():
+    with TestClient(app) as c:
+        assert c.post("/analyze/pcm", params={"seq": "-1"}, content=PCM_1_5S).status_code == 422
+
+
 def test_dummy_whisper_matches_model_schema():
     from app.detectors.audio_detector import voice_result
     from app.main import DUMMY_RESULT

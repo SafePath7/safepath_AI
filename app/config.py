@@ -45,6 +45,10 @@ YAMNET_THRESHOLD: float = float(_str("AI_YAMNET_THRESHOLD", "0.3"))
 # k=2(약 1초)는 한 프레임짜리 순간 잡음에 반응하지 않으면서 짧은 사건은 잡는 절충값이다.
 YAMNET_TOP_K: int = max(1, int(_str("AI_YAMNET_TOP_K", "2")))
 
+# 종합 위험도 임계값 (SDS FD-018 TBD-5). risk_score가 이 값 이상이면 is_danger.
+# risk_score는 모델별 점수를 '각자의 임계값 = 0.5'로 맞춘 값이라, 0.5면 모델별 임계값과 같은 판정이다 (app/risk.py).
+RISK_THRESHOLD: float = float(_str("AI_RISK_THRESHOLD", "0.5"))
+
 # 모델 가중치 캐시 폴더 (Git 제외). Windows 임시 폴더에 두면 디스크 정리 때 파일만 지워지고
 # 빈 폴더가 남아 TF Hub가 "saved_model.pb 없음" 오류로 실패하므로 프로젝트 안에 둔다.
 MODEL_CACHE_DIR: Path = Path(_str("AI_MODEL_CACHE_DIR", str(REPO_ROOT / "models")))

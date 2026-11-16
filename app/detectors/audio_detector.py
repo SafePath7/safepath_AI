@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from app import config
+from app.risk import combine
 from app.detectors.phrase import DANGER_PHRASES, score_danger_phrase
 
 log = logging.getLogger("safepath.ai.detector")
@@ -222,8 +223,4 @@ def analyze_clip(models: dict, waveform: np.ndarray) -> dict:
         f_yamnet = pool.submit(run_yamnet, models["yamnet"], models["yamnet_danger_index"], waveform)
     whisper_result = f_whisper.result()
     yamnet_result = f_yamnet.result()
-    return {
-        "whisper": whisper_result,
-        "yamnet": yamnet_result,
-        "is_danger": whisper_result["is_danger"] or yamnet_result["is_danger"],
-    }
+    return {**combine(whisper_result, yamnet_result), "whisper": whisper_result, "yamnet": yamnet_result}

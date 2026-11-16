@@ -13,7 +13,8 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 - `AI_LOAD_MODELS=0`이면 모델 없이 더미 응답을 돌려줍니다. 백엔드·앱과의 요청 수신 확인에 사용합니다.
 - `AI_LOAD_MODELS=1`이면 서버 시작 시 Whisper(base)와 YAMNet을 한 번 적재하고 같은 클립을 두 모델에 병렬로 넣습니다.
 - FD-015 위험 음향 감지(YAMNet): 비명·고함·유리 파손·충격음 유형별 점수(0~1)와 유형을 돌려줍니다. 초기 임계값 0.3.
-- 멀티모달 위험도(0~1) 종합, 움직임 감지, 화자 검증은 아직 구현되지 않았습니다. 일정은 팀 마일스톤 11~13주차를 따릅니다.
+- 폰이 3초 WAV를 약 1초마다 `POST /analyze`로 보내면 종합 위험도 `risk_score`(0~1)와 위험 유형 `risk_type`을 돌려줍니다(FD-018 1단계: 위험 문구·위험 음향).
+- 움직임 감지(FD-017)와 화자 검증 결합은 아직 구현되지 않았습니다. 일정은 팀 마일스톤 11~13주차를 따릅니다.
 
 ## 로컬 개발 시작
 
@@ -49,7 +50,7 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 | 메서드·경로 | 입력 | 설명 |
 |---|---|---|
 | GET `/health` | 없음 | `status`, `mode`(`dummy`/`model`), `models_loaded` |
-| POST `/analyze` | `multipart/form-data`의 `file` | wav, mp3, m4a 등 오디오 파일 |
+| POST `/analyze` | `multipart/form-data`의 `file` + `session_id`·`user_id`·`seq`·`captured_at`(선택) | 폰이 보내는 3초 WAV 등 → `risk_score`·`risk_type` |
 | POST `/analyze/pcm` | `application/octet-stream` 본문 | 16bit little-endian mono PCM. `?sample_rate=` 생략 시 16000 |
 
 `AI_API_KEY`를 설정하면 `/analyze` 계열 요청에 `X-API-Key` 헤더가 필요합니다. 요청 본문이 `AI_MAX_UPLOAD_MB`(기본 10MB)를 넘으면 413입니다. 요청·응답 형식은 [API 문서](docs/api/README.md)를 참고하세요.
@@ -61,6 +62,8 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 - `app/audio.py` — 오디오 입력을 16kHz mono float32로 변환
 - `app/detectors/audio_detector.py` — Whisper·YAMNet 위험 탐지
 - `scripts/send_test.py` — 수신 확인 스크립트(표준 라이브러리만 사용)
+- `scripts/simulate_watch.py` — 내 녹음을 워치 → 폰 형식(AAC 압축, 1초마다 3초 창)으로 변환하고 Whisper 결과 출력
+- `scripts/watch_files_check.py` — 폰이 저장한 워치 실녹음(`voice_<ms>.wav`) 시간순 분석·연속 녹음 복원
 - `tests/` — 더미 모드 API 테스트
 - `docs/` — API, 개발 환경, 모델 문서
 
