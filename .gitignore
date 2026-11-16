@@ -19,3 +19,6 @@ venv/
 # IDE
 .idea/
 .vscode/
+
+# 팀 내부 문서 (공개 저장소에 올리지 않음)
+*.pdf

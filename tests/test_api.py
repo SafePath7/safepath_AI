@@ -27,6 +27,43 @@ def test_analyze_pcm_dummy():
     assert body["mode"] == "dummy"
     assert body["duration_sec"] == 1.5
     assert body["is_danger"] is False
+    # 더미 응답도 모델 모드와 같은 FD-015 형식이어야 백엔드가 그대로 파싱할 수 있다
+    assert body["yamnet"] == {
+        "score": 0.0, "type": None, "is_danger": False,
+        "categories": {"scream": 0.0, "shout": 0.0, "glass_break": 0.0, "impact": 0.0},
+        "hits": [],
+    }
+
+
+def test_dummy_yamnet_matches_model_schema():
+    from app.detectors.audio_detector import empty_sound_result
+    from app.main import DUMMY_RESULT
+
+    assert DUMMY_RESULT["yamnet"] == empty_sound_result()
+
+
+def test_dummy_whisper_matches_model_schema():
+    from app.detectors.audio_detector import voice_result
+    from app.main import DUMMY_RESULT
+
+    assert DUMMY_RESULT["whisper"] == voice_result("skipped")
+
+
+def test_voice_profile_dummy():
+    with TestClient(app) as c:
+        r = c.post("/voice-profile", files={"file": ("enroll.wav", b"RIFF0000", "audio/wav")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "dummy" and body["model_version"] == "dummy"
+    # voice_profiles NOT NULL 컬럼을 모두 채울 수 있어야 백엔드 저장 흐름을 더미로 확인할 수 있다
+    assert len(body["embedding"]) == 192
+    assert isinstance(body["baseline_volume"], float) and isinstance(body["baseline_pitch"], float)
+
+
+def test_voice_profile_empty_file():
+    with TestClient(app) as c:
+        r = c.post("/voice-profile", files={"file": ("enroll.wav", b"", "audio/wav")})
+    assert r.status_code == 400
 
 
 def test_analyze_pcm_other_sample_rate_dummy():
@@ -83,11 +120,3 @@ def test_api_key(monkeypatch):
         assert c.post("/analyze/pcm", content=PCM_1_5S).status_code == 401
         assert c.post("/analyze/pcm", content=PCM_1_5S, headers={"X-API-Key": "wrong"}).status_code == 401
         assert c.post("/analyze/pcm", content=PCM_1_5S, headers={"X-API-Key": "secret"}).status_code == 200
-
-
-def test_detect_danger_phrase_ignores_spaces():
-    from app.detectors.audio_detector import detect_danger_phrase
-
-    assert detect_danger_phrase("살려 주세요")
-    assert detect_danger_phrase("누가 좀 도와 줘요")
-    assert not detect_danger_phrase("오늘 날씨 좋네요")

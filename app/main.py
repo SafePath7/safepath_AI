@@ -4,6 +4,7 @@ SafePath AI 분석 서버 (SDS M-10)
 GET  /health        : 서버·모델 상태
 POST /analyze       : 오디오 파일 업로드(wav, mp3, m4a 등) → 위험 판단
 POST /analyze/pcm   : 원시 PCM(16bit LE, mono) 바이트 → 위험 판단 (워치 청크 형식)
+POST /voice-profile : 음성 등록 녹음 → 화자 임베딩·평소 음량·피치 (FD-016, voice_profiles 저장값)
 
 AI_LOAD_MODELS=0이면 모델을 올리지 않고 더미 응답을 돌려준다(연동 확인용).
 """
@@ -24,9 +25,30 @@ log = logging.getLogger("safepath.ai")
 models: dict = {}
 
 DUMMY_RESULT = {
-    "whisper": {"text": "", "is_danger": False},
-    "yamnet": {"hits": [], "is_danger": False},
+    "whisper": {  # 모델 모드와 같은 형식 (audio_detector.voice_result)
+        "status": "skipped",  # 더미 모드: 분석하지 않음
+        "text": "",
+        "score": 0.0,
+        "is_danger": False,
+        "matches": [],
+    },
+    "yamnet": {  # 모델 모드와 같은 형식 (audio_detector.empty_sound_result)
+        "score": 0.0,
+        "type": None,
+        "is_danger": False,
+        "categories": {"scream": 0.0, "shout": 0.0, "glass_break": 0.0, "impact": 0.0},
+        "hits": [],
+    },
     "is_danger": False,
+}
+
+# 더미 모드 음성 프로필: voice_profiles NOT NULL 컬럼을 채울 수 있는 고정값 (연동 확인용, 실제 비교에 쓰면 안 됨)
+DUMMY_PROFILE = {
+    "model_version": "dummy",
+    "embedding": [0.0] * 192,
+    "baseline_volume": -25.0,
+    "baseline_pitch": 150.0,
+    "details": None,
 }
 
 
@@ -34,9 +56,11 @@ DUMMY_RESULT = {
 async def lifespan(app: FastAPI):
     if config.LOAD_MODELS:
         from app.detectors.audio_detector import load_models
+        from app.detectors.speaker import load_speaker_model
 
-        log.info("모델 로드 중 (Whisper %s, YAMNet)...", config.WHISPER_MODEL)
+        log.info("모델 로드 중 (Whisper %s, YAMNet, ECAPA 화자 임베딩)...", config.WHISPER_MODEL)
         models.update(load_models())
+        models["speaker"] = load_speaker_model()
         log.info("모델 로드 완료")
     else:
         log.info("AI_LOAD_MODELS=0: 모델 없이 더미 모드로 시작")
@@ -71,7 +95,7 @@ async def health():
     return {
         "status": "ok",
         "mode": mode(),
-        "models_loaded": [k for k in models if k != "yamnet_classes"],
+        "models_loaded": [k for k in models if k in ("whisper", "yamnet", "speaker")],
     }
 
 
@@ -133,3 +157,37 @@ async def analyze_pcm(
         waveform = await run_in_threadpool(load_pcm16, data, sr)
     dur = pcm16_duration_sec(data, sr)
     return await run_analysis(waveform, dur, source="pcm", received_bytes=len(data))
+
+
+@app.post("/voice-profile", dependencies=[Depends(verify_api_key)])
+async def voice_profile(file: UploadFile = File(...)):
+    """음성 등록 녹음에서 voice_profiles 저장값을 추출한다 (FD-016). 녹음은 저장하지 않는다.
+
+    녹음이 짧거나 작으면 422와 재녹음 사유 코드를 돌려준다 (SDS: 재녹음 안내).
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 없습니다.")
+    data = await file.read(max_bytes() + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+    if len(data) > max_bytes():
+        raise too_large()
+
+    if "speaker" not in models:
+        log.info("voice-profile bytes=%d mode=dummy", len(data))
+        return {"mode": "dummy", "received_bytes": len(data), **DUMMY_PROFILE}
+
+    from app.detectors.speaker import ProfileError, extract_profile
+
+    try:
+        waveform = await run_in_threadpool(load_audio_file, data, file.filename)
+    except Exception as exc:  # 디코딩 실패
+        raise HTTPException(status_code=400, detail=f"오디오를 읽을 수 없습니다: {exc}") from exc
+    try:
+        profile = await run_in_threadpool(extract_profile, models["speaker"], waveform)
+    except ProfileError as exc:
+        log.info("voice-profile 재녹음 필요: %s %s", exc.code, exc.info)
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc), **exc.info}) from exc
+    log.info("voice-profile bytes=%d speech=%ss volume=%s pitch=%s", len(data),
+             profile["details"]["speech_sec"], profile["baseline_volume"], profile["baseline_pitch"])
+    return {"mode": "model", "received_bytes": len(data), **profile}

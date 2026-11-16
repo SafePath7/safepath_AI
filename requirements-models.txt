@@ -5,3 +5,10 @@ tensorflow
 tensorflow_hub
 librosa
 pandas
+# tensorflow_hub 0.16 imports pkg_resources, which setuptools>=81 removed.
+setuptools<81
+# FD-016 speaker embedding (ECAPA-TDNN). On Windows the PyPI torch wheel is CPU-only (~200MB);
+# on Linux use --index-url https://download.pytorch.org/whl/cpu to avoid the multi-GB CUDA build.
+torch
+torchaudio
+speechbrain

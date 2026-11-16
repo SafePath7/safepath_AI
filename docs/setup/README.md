@@ -48,7 +48,10 @@ $env:AI_LOAD_MODELS = "1"
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-- 첫 실행 때 Whisper(base)와 YAMNet 가중치를 내려받으므로 시간이 걸립니다.
+- 첫 실행 때 Whisper(base, 약 145MB)와 YAMNet(약 14MB) 가중치를 내려받습니다. 이후 시작에는 약 15초 걸립니다.
+- YAMNet은 저장소의 `models/tfhub`에 저장됩니다(Git 제외). 예전처럼 Windows 임시 폴더에 두면 디스크 정리 후 빈 폴더만 남아 `saved_model.pb` 오류가 납니다. 캐시가 깨져 있으면 서버가 자동으로 지우고 다시 받습니다.
+- 실제 모델 테스트: `$env:AI_RUN_MODEL_TESTS = "1"; pytest` (기본 `pytest`는 모델 테스트를 건너뜁니다)
+- 위험 음향 점수 확인·임계값 튜닝: `python scripts\yamnet_check.py <파일 또는 폴더> --chunk 10`
 - 설치가 끝나면 `pip freeze`로 확인한 버전을 `requirements-models.txt`에 고정합니다.
 - mp3·m4a 파일 디코딩에는 ffmpeg가 필요할 수 있습니다. wav와 `/analyze/pcm`은 필요하지 않습니다.
 
