@@ -50,3 +50,32 @@ def test_missing_results_use_remaining():
 def test_risk_type_fits_event_type_column():
     from app.risk import SOUND_TYPES
     assert all(len(t) <= 20 for t in (DANGER_PHRASE, *SOUND_TYPES))  # risk_events.event_type VARCHAR(20)
+
+
+# ── 화자 검증 가산 ───────────────────────────────────────────────
+def speaker(boost, status="ok"):
+    from app.detectors.speaker import verify_result
+    return verify_result(status, boost=boost)
+
+
+def test_boost_pushes_borderline_sound_over_threshold():
+    # 고함 점수가 임계값 바로 아래(위험도 0.42)인데 본인 목소리가 평소보다 크게 올라갔으면 위험
+    sp = speaker(0.15)
+    r = combine(voice_result("no_speech"), sound(shout=0.25), sp)
+    assert r["is_danger"] is True and r["risk_type"] == "shout"
+    assert sp["applied"] == pytest.approx(0.15)
+
+
+def test_no_boost_without_existing_signal():
+    # 평소보다 크게 말하기만 한 것은 위험이 아니다 (VERIFY_BOOST_MIN_BASE 미만에는 더하지 않음)
+    sp = speaker(0.15)
+    r = combine(voice_result("ok", "야 여기야", 0.0), sound(shout=0.05), sp)
+    assert r["is_danger"] is False and sp["applied"] == 0.0
+
+
+def test_boost_never_lowers_or_exceeds_one():
+    sp = speaker(0.15)
+    assert combine(voice_result("ok", "살려주세요", 1.0), sound(), sp)["risk_score"] == 1.0
+    base = combine(voice_result("ok", "도와줘", 0.8), sound())
+    for status in ("off", "loading", "no_profile", "version_mismatch", "no_speech", "error"):
+        assert combine(voice_result("ok", "도와줘", 0.8), sound(), speaker(0.0, status)) == base

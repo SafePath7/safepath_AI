@@ -6,8 +6,8 @@ AI 서버 수신 확인 스크립트 (표준 라이브러리만 사용)
     python scripts/send_test.py --url http://<IP>:8000 --wav sample.wav
 
 1) GET /health
-2) POST /analyze/pcm  : 워치 형식(16kHz mono 16bit) 1.5초 무음 청크
-3) POST /analyze      : --wav 파일을 지정한 경우 파일 업로드
+2) POST /api/ai/analyze/pcm  : 워치 형식(16kHz mono 16bit) 1.5초 무음 청크
+3) POST /api/ai/analyze      : --wav 파일을 지정한 경우 파일 업로드
 """
 
 from __future__ import annotations  # Python 3.9 이하에서도 `str | None` 힌트 허용
@@ -47,7 +47,7 @@ def main() -> None:
     call(urllib.request.Request(f"{base}/health"))
 
     pcm = bytes(int(CHUNK_SEC * SAMPLE_RATE) * 2)  # 16bit 무음
-    call(urllib.request.Request(f"{base}/analyze/pcm", data=pcm, method="POST",
+    call(urllib.request.Request(f"{base}/api/ai/analyze/pcm", data=pcm, method="POST",
                                 headers=headers(a.api_key, {"Content-Type": "application/octet-stream"})))
 
     if a.wav:
@@ -57,7 +57,7 @@ def main() -> None:
         name = os.path.basename(a.wav)
         body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n"
                 f"Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
-        call(urllib.request.Request(f"{base}/analyze", data=body, method="POST",
+        call(urllib.request.Request(f"{base}/api/ai/analyze", data=body, method="POST",
                                     headers=headers(a.api_key, {"Content-Type": f"multipart/form-data; boundary={boundary}"})))
 
 

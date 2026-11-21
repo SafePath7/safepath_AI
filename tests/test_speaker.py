@@ -93,3 +93,85 @@ def test_measure_voice_detects_raised_pitch_and_volume():
     calm, urgent = sp.measure_voice(tone(150, 5, 0.05)), sp.measure_voice(tone(200, 5, 0.15))
     assert urgent["pitch_hz"] / calm["pitch_hz"] == pytest.approx(200 / 150, rel=0.03)
     assert urgent["volume_dbfs"] - calm["volume_dbfs"] == pytest.approx(9.5, abs=0.5)  # 3배 = +9.5 dB
+
+
+# ── 2단계 등록: 위급할 때 목소리 ────────────────────────────────
+@pytest.fixture
+def two_voices(monkeypatch):
+    """평소 목소리(낮은 피치)와 다급한 목소리(높은 피치)에 서로 다른 임베딩을 준다."""
+    rng = np.random.default_rng(5)
+    calm_vec, urgent_vec = (v / np.linalg.norm(v) for v in rng.normal(size=(2, sp.EMBEDDING_DIM)))
+    monkeypatch.setattr(sp, "speech_only", lambda w: w)
+    monkeypatch.setattr(sp, "embed", lambda m, s: urgent_vec if np.abs(s).max() > 0.2 else calm_vec)
+    return calm_vec, urgent_vec
+
+
+def test_urgent_recording_keeps_baseline_from_calm_only(two_voices):
+    pytest.importorskip("librosa")
+    calm_vec, _ = two_voices
+    calm, urgent = tone(150, 12, 0.05), tone(220, 3, 0.4)
+    p = sp.extract_profile(FakeSpeakerModel(), calm, urgent, mix_urgent=False)
+    assert p["baseline_pitch"] == pytest.approx(150, rel=0.03)  # 다급한 목소리가 기준값을 끌어올리면 안 된다
+    assert np.allclose(p["embedding"], calm_vec, atol=1e-5) and p["details"]["embedding_source"] == "calm"
+    u = p["details"]["urgent"]
+    assert u["pitch_ratio"] == pytest.approx(220 / 150, rel=0.03) and u["volume_delta_db"] > 15
+    assert p["model_version"] == sp.MODEL_VERSION  # 같은 ECAPA 공간이라 버전은 그대로
+
+
+def test_urgent_recording_mixed_into_embedding(two_voices):
+    pytest.importorskip("librosa")
+    calm_vec, urgent_vec = two_voices
+    p = sp.extract_profile(FakeSpeakerModel(), tone(150, 12, 0.05), tone(220, 3, 0.4), mix_urgent=True)
+    e = np.array(p["embedding"])
+    assert np.linalg.norm(e) == pytest.approx(1.0, abs=1e-4)
+    assert sp.cosine(e, calm_vec) > 0.6 and sp.cosine(e, urgent_vec) > 0.6  # 두 목소리 모두에 가까워진다
+    assert p["details"]["embedding_source"] == "calm+urgent"
+
+
+def test_urgent_recording_too_short(two_voices):
+    with pytest.raises(sp.ProfileError) as e:
+        sp.extract_profile(FakeSpeakerModel(), tone(150, 12, 0.05), tone(220, 0.5, 0.4))
+    assert e.value.code == "urgent_too_short" and "다급하게" in str(e.value)
+
+
+# ── 화자 검증 (FD-016 결합) ──────────────────────────────────────
+def enrolled(f0=150.0, vec=None):
+    vec = np.random.default_rng(0).normal(size=sp.EMBEDDING_DIM) if vec is None else vec
+    vec = vec / np.linalg.norm(vec)
+    return {"model_version": sp.MODEL_VERSION, "speaker_embedding": vec.tolist(),
+            "baseline_volume": -26.0, "baseline_pitch": f0,
+            "baseline_details": {"volume_p90": -22.0, "pitch_p90": f0 * 1.1}}
+
+
+def test_verify_same_speaker_raised_voice_gives_boost(fake_pipeline):
+    pytest.importorskip("librosa")
+    r = sp.verify_voice(FakeSpeakerModel(), tone(freq=210, seconds=3, amp=0.3), enrolled(150))  # 피치 x1.4, 크게
+    assert r["status"] == "ok" and r["is_user"] is True and r["similarity"] == pytest.approx(1.0, abs=1e-4)
+    assert r["pitch_ratio"] == pytest.approx(1.4, rel=0.03)
+    assert r["agitation"] == 1.0 and r["boost"] == pytest.approx(config.VERIFY_BOOST_MAX)
+
+
+def test_verify_calm_voice_gives_no_boost(fake_pipeline):
+    pytest.importorskip("librosa")
+    r = sp.verify_voice(FakeSpeakerModel(), tone(freq=150, seconds=3, amp=0.05), enrolled(150))
+    assert r["is_user"] is True and r["agitation"] == 0.0 and r["boost"] == 0.0
+
+
+def test_verify_other_speaker_gives_no_boost(fake_pipeline):
+    pytest.importorskip("librosa")
+    other = np.random.default_rng(99).normal(size=sp.EMBEDDING_DIM)  # 무작위 벡터끼리는 코사인 약 0
+    r = sp.verify_voice(FakeSpeakerModel(), tone(freq=210, seconds=3, amp=0.3), enrolled(150, other))
+    assert r["is_user"] is False and r["boost"] == 0.0 and r["agitation"] == 1.0
+
+
+def test_verify_skips_on_version_mismatch_and_short_speech(fake_pipeline):
+    old = {**enrolled(), "model_version": "fd016-v0/old"}
+    assert sp.verify_voice(FakeSpeakerModel(), tone(seconds=3), old)["status"] == "version_mismatch"
+    assert sp.verify_voice(FakeSpeakerModel(), tone(seconds=0.5), enrolled())["status"] == "no_speech"
+
+
+def test_agitation_without_details_uses_fixed_margin():
+    p = {**enrolled(150), "baseline_details": None}
+    _, _, calm = sp.agitation_level({"pitch_hz": 160.0, "volume_dbfs": -24.0}, p)   # x1.07, +2dB
+    _, _, loud = sp.agitation_level({"pitch_hz": 150.0, "volume_dbfs": -14.0}, p)   # +12dB
+    assert calm == 0.0 and loud == 1.0

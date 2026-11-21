@@ -11,6 +11,7 @@
     python scripts/watch_files_check.py voice_debug/ --no-model      # 순서·간격·길이만 확인
     python scripts/watch_files_check.py voice_debug/ --stitch out/   # 구간별 연속 녹음 wav도 만든다
     python scripts/watch_files_check.py voice_debug/ --csv result.csv
+    python scripts/watch_files_check.py voice_debug/ --profile profiles/7.json   # 화자 검증 포함
 """
 
 import argparse
@@ -116,6 +117,7 @@ def main() -> None:
     ap.add_argument("--no-model", action="store_true", help="모델 없이 순서·간격·길이만 확인")
     ap.add_argument("--stitch", metavar="DIR", help="녹음 구간별 연속 wav를 이 폴더에 저장")
     ap.add_argument("--csv", metavar="FILE", help="분석표를 CSV로 저장")
+    ap.add_argument("--profile", metavar="JSON", help="음성 프로필(scripts/enroll_profile.py 결과)로 화자 검증도 함께")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -133,13 +135,23 @@ def main() -> None:
         from app.detectors.audio_detector import analyze_clip, load_models
         print("모델 로드 중...", flush=True)
         models = load_models()
+    profile = None
+    if args.profile and models is not None:
+        import json
+
+        from app.detectors.speaker import load_speaker_model
+        from app.profiles import normalize
+        profile = normalize(json.loads(Path(args.profile).read_text(encoding="utf-8")))
+        models["speaker"] = load_speaker_model()
+        print(f"화자 검증: {args.profile} (평소 피치 {profile['baseline_pitch']} Hz, 음량 {profile['baseline_volume']} dBFS)")
 
     rows = []
     for g, idx in enumerate(groups, 1):
         span = (stamps[idx[-1]] - stamps[idx[0]]) / 1000
         print(f"── 구간 {g}: {clock(stamps[idx[0]])} ~ {clock(stamps[idx[-1]])} ({len(idx)}개, 약 {span + 1:.0f}초)")
         print(f"   {'녹음 시각':12s} {'간격ms':>6s} {'길이s':>5s}" + ("" if models is None else
-              f" {'위험도':>6s} {'유형':13s} {'처리ms':>6s}  인식 텍스트"))
+              f" {'위험도':>6s} {'유형':13s} {'처리ms':>6s}" + ("" if profile is None else
+              f" {'유사도':>5s} {'흥분':>4s} {'가산':>5s}") + "  인식 텍스트"))
         windows = []
         for k, i in enumerate(idx):
             t, path = files[i]
@@ -152,11 +164,23 @@ def main() -> None:
             if models is not None:
                 import time
                 t0 = time.perf_counter()
-                r = analyze_clip(models, x)
+                r = analyze_clip(models, x, profile, "found" if profile else "off")
                 ms = round((time.perf_counter() - t0) * 1000)
                 mark = "⚠" if r["is_danger"] else " "
                 text = r["whisper"]["text"] or f"({r['whisper']['status']})"
-                line += f" {r['risk_score']:>6.2f} {str(r['risk_type'] or '-'):13s} {ms:>6d} {mark} {text}"
+                line += f" {r['risk_score']:>6.2f} {str(r['risk_type'] or '-'):13s} {ms:>6d}"
+                if profile is not None:
+                    v = r["speaker"]
+                    if v["status"] == "ok":
+                        user = "본인" if v["is_user"] else "타인"
+                        line += f" {v['similarity']:>5.2f} {v['agitation']:>4.2f} {v['applied']:>+5.2f}"
+                        text = f"[{user}] {text}"
+                    else:
+                        line += f" {'-':>5s} {'-':>4s} {'-':>5s}"
+                    row.update(speaker_status=v["status"], similarity=v["similarity"], is_user=v["is_user"],
+                               pitch_ratio=v["pitch_ratio"], volume_delta_db=v["volume_delta_db"],
+                               agitation=v["agitation"], boost_applied=v["applied"])
+                line += f" {mark} {text}"
                 row.update(risk_score=r["risk_score"], risk_type=r["risk_type"], is_danger=r["is_danger"],
                            voice_score=r["whisper"]["score"], sound_score=r["yamnet"]["score"],
                            sound_type=r["yamnet"]["type"], text=r["whisper"]["text"], processing_ms=ms)

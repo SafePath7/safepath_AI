@@ -30,9 +30,9 @@ conda activate safepath-ai
 python scripts\send_test.py
 ```
 
-`/health` 응답과 `/analyze/pcm` 응답이 출력되고, 서버 창에 `analyze source=pcm bytes=48000 duration=1.5 mode=dummy` 로그가 남으면 수신 확인이 끝난 것입니다.
+`/health` 응답과 `/api/ai/analyze/pcm` 응답이 출력되고, 서버 창에 `analyze source=pcm bytes=48000 duration=1.5 mode=dummy` 로그가 남으면 수신 확인이 끝난 것입니다.
 
-`POST /analyze`(파일 업로드, 백엔드가 보낼 형식)까지 확인하려면 wav 파일을 지정합니다.
+`POST /api/ai/analyze`(파일 업로드, 폰이 보낼 형식)까지 확인하려면 wav 파일을 지정합니다.
 
 ```powershell
 python scripts\send_test.py --wav <wav 파일 경로>
@@ -57,7 +57,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - 내 녹음으로 워치 경로 모사: `python scripts\simulate_watch.py <녹음 폴더>` → 16kHz WAV 변환, 파일별 Whisper 텍스트·위험 판정, AAC 압축 후 3초 창 파일(`<폴더>oice_debug`) 생성. 이어서 아래 `watch_files_check.py`로 분석합니다.
 - 워치 실녹음 점검: 폰 디버그 빌드의 `files/voice_debug/`에서 받은 `voice_<녹음시각ms>.wav`를 시간순으로 분석합니다. `python scripts\watch_files_check.py <폴더> --stitch out --csv result.csv` (`--no-model`이면 순서·간격만 확인). 파일 하나가 폰이 AI로 보낼 3초 창과 같고, 이웃 파일끼리 2초 겹칩니다. `--stitch`는 구간별 연속 녹음 wav를 만듭니다.
 - 설치가 끝나면 `pip freeze`로 확인한 버전을 `requirements-models.txt`에 고정합니다.
-- mp3·m4a 파일 디코딩에는 ffmpeg가 필요할 수 있습니다. wav와 `/analyze/pcm`은 필요하지 않습니다.
+- mp3·m4a 파일 디코딩에는 ffmpeg가 필요할 수 있습니다. wav와 `/api/ai/analyze/pcm`은 필요하지 않습니다.
 
 ## 저장소를 새로 받은 뒤(git pull) 할 일
 
@@ -73,7 +73,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - **처음 서버를 켤 때 화자 모델(약 80MB)을 추가로 내려받습니다.** Hugging Face 경고(`HF_TOKEN`)가 보여도 무시해도 됩니다.
 - 예전에 YAMNet을 써 본 PC는 `%LOCALAPPDATA%\Temp\tfhub_modules`에 깨진 캐시가 남아 있을 수 있습니다. 이제 쓰지 않는 폴더라 지워도 됩니다.
 - 응답 형식이 바뀌었습니다. `whisper`에 `status`·`score`·`matches`, `yamnet`에 `score`·`type`·`categories`가 추가됐습니다([API 문서](../api/README.md)). 더미 모드도 같은 형식을 돌려줍니다.
-- 새 엔드포인트 `POST /voice-profile`(음성 등록, FD-016)이 생겼습니다.
+- 새 엔드포인트 `POST /api/ai/voice-profiles`(음성 등록, FD-016)가 생겼습니다.
+- 엔드포인트가 팀 API 명세에 맞춰 `/api/ai/...`로 바뀌었습니다(`/analyze` → `/api/ai/analyze`, `/voice-profile` → `/api/ai/voice-profiles`).
 - `.env.example`에 설정이 추가됐습니다. 기존 `.env`에 없어도 기본값으로 동작하지만, 바꾸려면 `.env.example`을 참고해 추가합니다.
 
 설치 확인:
@@ -98,4 +99,4 @@ $env:AI_RUN_MODEL_TESTS = "1"; pytest
 python remote_check.py --url http://<AI 서버 PC IP>:8000
 ```
 
-TCP 연결, `/health`, `/analyze`(multipart), `/analyze/pcm`을 차례로 확인하고 PASS/FAIL을 출력합니다. 연결이 안 되면 원인(서버 꺼짐·방화벽·다른 네트워크)을 구분해 안내합니다. 성공하면 서버 창에 보낸 PC의 IP로 `POST /analyze ... 200 OK` 로그가 찍힙니다.
+TCP 연결, `/health`, `/api/ai/analyze`(multipart), `/api/ai/analyze/pcm`을 차례로 확인하고 PASS/FAIL을 출력합니다. 연결이 안 되면 원인(서버 꺼짐·방화벽·다른 네트워크)을 구분해 안내합니다. 성공하면 서버 창에 보낸 PC의 IP로 `POST /api/ai/analyze ... 200 OK` 로그가 찍힙니다.

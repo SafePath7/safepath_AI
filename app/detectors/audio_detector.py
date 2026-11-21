@@ -217,10 +217,29 @@ def run_yamnet(yamnet_model, danger_index: dict, waveform: np.ndarray) -> dict:
 
 
 # ── 병렬 실행 ───────────────────────────────────────────────────
-def analyze_clip(models: dict, waveform: np.ndarray) -> dict:
-    with ThreadPoolExecutor(max_workers=2) as pool:
+def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None,
+                 profile_status: str = "off") -> dict:
+    """위험 문구·위험 음향(·화자 검증)을 병렬로 돌려 종합 위험도를 낸다.
+
+    profile: 사용자 음성 프로필(app.profiles). 없으면 화자 검증은 profile_status 상태로 건너뛴다.
+    """
+    from app.detectors.speaker import verify_result, verify_voice
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
         f_whisper = pool.submit(analyze_voice, models["whisper"], waveform)
         f_yamnet = pool.submit(run_yamnet, models["yamnet"], models["yamnet_danger_index"], waveform)
+        f_speaker = None
+        if profile is not None and models.get("speaker") is not None:
+            f_speaker = pool.submit(verify_voice, models["speaker"], waveform, profile)
     whisper_result = f_whisper.result()
     yamnet_result = f_yamnet.result()
-    return {**combine(whisper_result, yamnet_result), "whisper": whisper_result, "yamnet": yamnet_result}
+    if f_speaker is None:
+        speaker_result = verify_result(profile_status)
+    else:
+        try:
+            speaker_result = f_speaker.result()
+        except Exception:  # 화자 검증 실패가 위험 감지를 막지 않게
+            log.exception("화자 검증 실패")
+            speaker_result = verify_result("error")
+    risk = combine(whisper_result, yamnet_result, speaker_result)
+    return {**risk, "whisper": whisper_result, "yamnet": yamnet_result, "speaker": speaker_result}

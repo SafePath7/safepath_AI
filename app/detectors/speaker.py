@@ -38,6 +38,7 @@ class ProfileError(ValueError):
         "too_short": "말소리가 너무 짧습니다. 안내 문장을 끝까지 읽어 주세요.",
         "too_quiet": "목소리가 너무 작습니다. 휴대폰을 입에 가까이 대고 다시 녹음해 주세요.",
         "no_pitch": "목소리 높낮이를 측정하지 못했습니다. 속삭이지 말고 평소 목소리로 다시 녹음해 주세요.",
+        "urgent_too_short": "위급할 때 목소리가 거의 들리지 않습니다. 실제 상황처럼 크고 다급하게 다시 외쳐 주세요.",
     }
 
     def __init__(self, code: str, **info):
@@ -112,8 +113,19 @@ def measure_voice(speech: np.ndarray) -> dict:
 
 
 # ── 등록 ────────────────────────────────────────────────────────
-def extract_profile(speaker_model, waveform: np.ndarray) -> dict:
-    """등록 녹음 → voice_profiles 저장값. 재녹음이 필요하면 ProfileError."""
+def extract_profile(speaker_model, waveform: np.ndarray, urgent: np.ndarray | None = None,
+                    mix_urgent: bool | None = None) -> dict:
+    """등록 녹음 → voice_profiles 저장값. 재녹음이 필요하면 ProfileError.
+
+    waveform: 1단계 평소 목소리(20~30초). 평소 음량·피치 기준값은 이것으로만 잰다.
+    urgent:   2단계 위급할 때 목소리(선택, "살려주세요" 등을 크고 다급하게 3~5번).
+              다급한 목소리는 본인이어도 평소 목소리와 임베딩 유사도가 떨어진다(FD-016 평가 0.77 → 0.53).
+              mix_urgent(기본 config.ENROLL_MIX_URGENT)가 켜져 있으면 두 임베딩을 합쳐 저장해 이 하락을 줄인다.
+              같은 ECAPA 공간의 벡터라 model_version은 그대로다. 어떤 녹음으로 만들었는지는 details.embedding_source.
+              꺼져 있어도 details.urgent에 평소 대비 변화를 기록한다(사람마다 다른 '다급할 때 변화폭' 참고값).
+    """
+    if mix_urgent is None:
+        mix_urgent = config.ENROLL_MIX_URGENT
     speech = speech_only(waveform)
     speech_sec = len(speech) / SR
     if speech_sec == 0:
@@ -128,18 +140,100 @@ def extract_profile(speaker_model, waveform: np.ndarray) -> dict:
         raise ProfileError("no_pitch")
 
     embedding = embed(speaker_model, speech)
+    details = {
+        "speech_sec": round(speech_sec, 1),
+        "total_sec": round(len(waveform) / SR, 1),
+        "volume_p10": round(v["volume_p10"], 2),
+        "volume_p90": round(v["volume_p90"], 2),
+        "pitch_p10": round(v["pitch_p10"], 1),
+        "pitch_p90": round(v["pitch_p90"], 1),
+        "embedding_source": "calm",
+    }
+
+    if urgent is not None:
+        u_speech = speech_only(urgent)
+        u_sec = len(u_speech) / SR
+        if u_sec < config.ENROLL_URGENT_MIN_SPEECH_SEC:
+            raise ProfileError("urgent_too_short", speech_sec=round(u_sec, 1),
+                               min_sec=config.ENROLL_URGENT_MIN_SPEECH_SEC)
+        u_emb = embed(speaker_model, u_speech)
+        u = measure_voice(u_speech)
+        details["urgent"] = {
+            "speech_sec": round(u_sec, 1),
+            "similarity_to_calm": round(cosine(embedding, u_emb), 4),
+            "pitch_ratio": round(u["pitch_hz"] / v["pitch_hz"], 3) if u["pitch_hz"] else None,
+            "volume_delta_db": round(u["volume_dbfs"] - v["volume_dbfs"], 2),
+        }
+        if mix_urgent:
+            mixed = embedding + u_emb
+            embedding = mixed / (np.linalg.norm(mixed) + 1e-12)
+            details["embedding_source"] = "calm+urgent"
+
     return {
         "model_version": MODEL_VERSION,
         "embedding": [round(float(x), 6) for x in embedding],
         "baseline_volume": round(v["volume_dbfs"], 2),
         "baseline_pitch": round(v["pitch_hz"], 1),
-        # DB 컬럼 밖의 참고값: 평소 변동 폭. '평소 대비 변화'를 판단할 때 쓸 수 있어 함께 돌려준다.
-        "details": {
-            "speech_sec": round(speech_sec, 1),
-            "total_sec": round(len(waveform) / SR, 1),
-            "volume_p10": round(v["volume_p10"], 2),
-            "volume_p90": round(v["volume_p90"], 2),
-            "pitch_p10": round(v["pitch_p10"], 1),
-            "pitch_p90": round(v["pitch_p90"], 1),
-        },
+        # DB 컬럼 밖의 참고값: 평소 변동 폭과 2단계 녹음 결과. baseline_details(JSONB)에 저장을 제안.
+        "details": details,
     }
+
+
+# ── 화자 검증 (분석 중, 등록 프로필이 있을 때) ───────────────────
+def cosine(a, b) -> float:
+    a, b = np.asarray(a, np.float32), np.asarray(b, np.float32)
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+
+
+def verify_result(status: str, **values) -> dict:
+    """화자 검증 결과 형식. status가 ok가 아니면 점수에 반영하지 않는다(boost 0)."""
+    base = {"status": status, "similarity": None, "is_user": None, "pitch_ratio": None,
+            "volume_delta_db": None, "agitation": None, "boost": 0.0, "applied": 0.0}
+    return {**base, **values}
+
+
+def agitation_level(m: dict, profile: dict) -> tuple[float | None, float | None, float]:
+    """평소 목소리 대비 높아진 정도 0~1. (피치 비율, 음량 차이 dB, 흥분도)
+
+    피치: 평소 중앙값 대비 비율. 평소 변동 상단(pitch_p90)까지는 0, 그 위로 VERIFY_PITCH_SPAN만큼 오르면 1.
+    음량: 평소 중앙값 대비 dB. 평소 변동 상단(volume_p90)까지는 0, 그 위로 VERIFY_VOLUME_SPAN_DB만큼 커지면 1.
+    마이크 거리에 따라 음량은 쉽게 변하므로 둘 중 큰 값을 쓰되 각각 상한 1로 자른다.
+    details(평소 변동 폭)가 없으면 고정 여유(피치 x1.1, 음량 +3dB)를 쓴다.
+    """
+    details = profile.get("baseline_details") or {}
+    base_pitch, base_vol = profile["baseline_pitch"], profile["baseline_volume"]
+    ratio = m["pitch_hz"] / base_pitch if m["pitch_hz"] and base_pitch else None
+    delta = m["volume_dbfs"] - base_vol
+    pitch_top = (details.get("pitch_p90") or base_pitch * 1.1) / base_pitch
+    vol_top = (details.get("volume_p90") or base_vol + 3.0) - base_vol
+    a_pitch = 0.0 if ratio is None else (ratio - pitch_top) / config.VERIFY_PITCH_SPAN
+    a_vol = (delta - vol_top) / config.VERIFY_VOLUME_SPAN_DB
+    level = float(np.clip(max(a_pitch, a_vol), 0.0, 1.0))
+    return ratio, delta, level
+
+
+def verify_voice(speaker_model, waveform: np.ndarray, profile: dict) -> dict:
+    """등록한 본인 목소리인지, 평소보다 높고 큰지 본다. 점수는 더하기만 한다(boost).
+
+    본인 판정이 틀려도 위험 감지가 막히지 않게, 결과는 위험도를 올리는 데만 쓴다.
+    (FD-016 평가: 다급한 목소리는 본인이어도 유사도가 0.5 안팎으로 떨어져 타인과 겹친다.)
+    """
+    if profile.get("model_version") != MODEL_VERSION:
+        return verify_result("version_mismatch")
+    speech = speech_only(waveform)
+    if len(speech) < config.VERIFY_MIN_SPEECH_SEC * SR:
+        return verify_result("no_speech")
+    sim = cosine(embed(speaker_model, speech), profile["speaker_embedding"])
+    is_user = sim >= config.VERIFY_SIM_THRESHOLD
+    m = measure_voice(speech)
+    ratio, delta, level = agitation_level(m, profile)
+    boost = config.VERIFY_BOOST_MAX * level if is_user else 0.0
+    return verify_result(
+        "ok",
+        similarity=round(sim, 4),
+        is_user=is_user,
+        pitch_ratio=None if ratio is None else round(ratio, 3),
+        volume_delta_db=round(delta, 2),
+        agitation=round(level, 3),
+        boost=round(boost, 4),
+    )

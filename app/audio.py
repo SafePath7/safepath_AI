@@ -51,3 +51,31 @@ def load_pcm16(data: bytes, sample_rate: int = TARGET_SR) -> np.ndarray:
 
 def duration_sec(waveform: np.ndarray) -> float:
     return round(len(waveform) / TARGET_SR, 3)
+
+
+def pcm16_to_wav(data: bytes, sr: int) -> bytes:
+    """16bit mono PCM → WAV 파일 바이트."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(data)
+    return buf.getvalue()
+
+
+def wav_to_pcm16(data: bytes) -> tuple[bytes, int] | None:
+    """16bit mono WAV → (PCM, 샘플레이트). 다른 형식이면 None (원본 이어 붙이기를 못 하는 경우)."""
+    import io
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(data), "rb") as w:
+            if w.getnchannels() != 1 or w.getsampwidth() != 2 or w.getcomptype() != "NONE":
+                return None
+            return w.readframes(w.getnframes()), w.getframerate()
+    except (wave.Error, EOFError):
+        return None

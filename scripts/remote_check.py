@@ -13,8 +13,8 @@
 순서:
     1) TCP 연결   : IP·포트까지 닿는지 (방화벽·네트워크 문제를 여기서 구분)
     2) GET  /health
-    3) POST /analyze      : 백엔드가 보낼 형식(multipart, 필드 이름 file)으로 wav 업로드
-    4) POST /analyze/pcm  : 워치 형식(16kHz mono 16bit) 원시 PCM
+    3) POST /api/ai/analyze      : 폰이 보낼 형식(multipart, 필드 이름 file)으로 wav 업로드
+    4) POST /api/ai/analyze/pcm  : 워치 형식(16kHz mono 16bit) 원시 PCM
 각 단계의 상태 코드·응답 형식을 검사하고 마지막에 PASS/FAIL 요약을 출력한다.
 """
 
@@ -171,7 +171,7 @@ def step_health(base: str, timeout: float) -> bool:
 
 
 def step_analyze(base: str, timeout: float, auth: dict, wav_path: str | None, repeat: int) -> None:
-    title("3) POST /analyze (multipart, 백엔드 형식)")
+    title("3) POST /api/ai/analyze (multipart, 폰 형식)")
     if wav_path:
         with open(wav_path, "rb") as f:
             data = f.read()
@@ -184,8 +184,8 @@ def step_analyze(base: str, timeout: float, auth: dict, wav_path: str | None, re
 
     times = []
     for i in range(repeat):
-        name = "POST /analyze" + (f" #{i + 1}" if repeat > 1 else "")
-        status, resp, ms, err = request("POST", f"{base}/analyze", timeout, body,
+        name = "POST /api/ai/analyze" + (f" #{i + 1}" if repeat > 1 else "")
+        status, resp, ms, err = request("POST", f"{base}/api/ai/analyze", timeout, body,
                                         {"Content-Type": ctype, **auth})
         if status is None:
             record(name, False, err)
@@ -199,15 +199,15 @@ def step_analyze(base: str, timeout: float, auth: dict, wav_path: str | None, re
 
 
 def step_pcm(base: str, timeout: float, auth: dict) -> None:
-    title("4) POST /analyze/pcm (워치 형식 16kHz mono 16bit)")
+    title("4) POST /api/ai/analyze/pcm (워치 형식 16kHz mono 16bit)")
     pcm = make_pcm(CHUNK_SEC)
-    status, resp, ms, err = request("POST", f"{base}/analyze/pcm", timeout, pcm,
+    status, resp, ms, err = request("POST", f"{base}/api/ai/analyze/pcm", timeout, pcm,
                                     {"Content-Type": "application/octet-stream", **auth})
     if status is None:
-        record("POST /analyze/pcm", False, err)
+        record("POST /api/ai/analyze/pcm", False, err)
         return
     show(status, resp, ms)
-    if check_analyze_body("POST /analyze/pcm", status, resp, len(pcm)) and resp.get("duration_sec") != CHUNK_SEC:
+    if check_analyze_body("POST /api/ai/analyze/pcm", status, resp, len(pcm)) and resp.get("duration_sec") != CHUNK_SEC:
         record("PCM 길이 계산", False, f"duration_sec={resp.get('duration_sec')} (기대값 {CHUNK_SEC})")
 
 
@@ -217,7 +217,7 @@ def main() -> int:
     p.add_argument("--url", required=True, help="AI 서버 주소, 예: http://172.21.3.30:8000")
     p.add_argument("--wav", help="업로드할 wav 파일 (생략하면 테스트 음을 만들어 보냄)")
     p.add_argument("--api-key", default=os.getenv("AI_API_KEY"), help="서버에 AI_API_KEY를 설정한 경우")
-    p.add_argument("--repeat", type=int, default=1, help="/analyze 반복 횟수 (응답 시간 측정)")
+    p.add_argument("--repeat", type=int, default=1, help="/api/ai/analyze 반복 횟수 (응답 시간 측정)")
     p.add_argument("--timeout", type=float, default=10.0, help="요청 타임아웃(초)")
     a = p.parse_args()
 
@@ -241,7 +241,7 @@ def main() -> int:
     for name, ok, _ in results:
         print(f"  {'PASS' if ok else 'FAIL'}  {name}")
     passed = all(ok for _, ok, _ in results) and bool(results)
-    print("\n결과: " + ("모두 통과. 서버 창에 이 노트북 IP로 POST /analyze 200 로그가 찍혔는지 확인하세요."
+    print("\n결과: " + ("모두 통과. 서버 창에 이 노트북 IP로 POST /api/ai/analyze 200 로그가 찍혔는지 확인하세요."
                         if passed else "실패한 단계의 안내 문구를 확인하세요."))
     return 0 if passed else 1
 
