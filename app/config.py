@@ -58,7 +58,7 @@ VERIFY_MIN_SPEECH_SEC: float = float(_str("AI_VERIFY_MIN_SPEECH_SEC", "1.0"))  #
 VERIFY_PITCH_SPAN: float = float(_str("AI_VERIFY_PITCH_SPAN", "0.3"))          # 평소 상단보다 피치 x0.3 더 오르면 흥분도 1
 VERIFY_VOLUME_SPAN_DB: float = float(_str("AI_VERIFY_VOLUME_SPAN_DB", "6"))    # 평소 상단보다 6dB 더 크면 흥분도 1
 
-# 백엔드 연동 (app/backend.py). 폰이 보낸 Firebase 토큰을 그대로 넘기고 X-Internal-Key로 AI 서버임을 알린다.
+# 백엔드 연동 (app/backend.py). 폰이 보낸 Firebase 토큰을 그대로 넘긴다. BACKEND_KEY는 선택(설정하면 X-Internal-Key 헤더, 개발 중에는 비워 둠).
 #   BACKEND_URL을 비우면 백엔드를 부르지 않는다(프로필 조회·위험 이벤트 생성·프로필 저장 모두 생략).
 BACKEND_URL: str | None = os.getenv("AI_BACKEND_URL", "").strip().rstrip("/") or None
 BACKEND_KEY: str | None = os.getenv("AI_BACKEND_KEY", "").strip() or None

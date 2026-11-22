@@ -27,6 +27,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -142,6 +143,8 @@ class _Session:
     last_clip_ms: int | None = None  # 이어 붙이지 못할 때: 마지막으로 올린 창의 captured_at
     last_clip_mono: float = 0.0
     timer: threading.Timer | None = None
+    # 업로드는 세션마다 한 줄로 차례대로 보낸다 (조각 번호 순서 유지, 백엔드에 동시 연결이 몰리지 않게)
+    uploader: ThreadPoolExecutor = field(default_factory=lambda: ThreadPoolExecutor(1, thread_name_prefix="event-upload"))
 
 
 class EventReporter:
@@ -155,6 +158,7 @@ class EventReporter:
         for s in sessions:
             if s.timer:
                 s.timer.cancel()
+            s.uploader.shutdown(wait=False)
 
     def report(self, result: dict, meta: dict, token: str | None, clip: tuple[str, bytes] | None,
                motion: dict | None = None, location: dict | None = None) -> tuple[int | None, str]:
@@ -167,7 +171,7 @@ class EventReporter:
             now = time.monotonic()
             for k in [k for k, s in self._sessions.items()
                       if now - s.seen > SESSION_IDLE_SEC and s.event_id is None]:
-                del self._sessions[k]  # 오래 요청이 없는 세션의 메모리 소리 정리
+                self._sessions.pop(k).uploader.shutdown(wait=False)  # 오래 요청이 없는 세션의 메모리 소리 정리
             sess = self._sessions.setdefault(session_id, _Session())
             sess.seen = now
         jobs: list = []
@@ -185,7 +189,7 @@ class EventReporter:
                 elif decoded is None and self._clip_due(sess, meta.get("captured_at"), now):
                     jobs.append(self._raw_job(sess, clip, meta, result, motion, location))
             elif not danger:
-                self._run(jobs)
+                self._run(sess, jobs)
                 return None, "none"
             else:
                 try:
@@ -193,13 +197,13 @@ class EventReporter:
                                                     iso_utc(meta["captured_at"]))
                 except (backend.BackendError, KeyError, ValueError) as exc:
                     log.warning("위험 이벤트 생성 실패 session=%s: %s", session_id, exc)
-                    self._run(jobs)
+                    self._run(sess, jobs)
                     return None, "failed"
                 status = "created"
                 log.info("위험 이벤트 생성 session=%s event=%s type=%s risk=%.2f",
                          session_id, event_id, result["risk_type"], result["risk_score"])
                 jobs += self._open(sess, event_id, token, now, decoded, meta, clip, result, motion, location)
-        self._run(jobs)
+        self._run(sess, jobs)
         return (event_id if danger else None), status
 
     def finish(self, session_id: str, event_id: int) -> None:
@@ -210,9 +214,9 @@ class EventReporter:
             return
         with sess.lock:
             jobs = self._close(sess) if sess.event_id == event_id else []
-        self._run(jobs)
+        self._run(sess, jobs)
 
-    # ---- 내부: 잠금(sess.lock) 안에서 올릴 일을 만들고, 업로드는 잠금 밖 백그라운드에서 한다 ----
+    # ---- 내부: 잠금(sess.lock) 안에서 올릴 일을 만들고, 업로드는 잠금 밖에서 세션 업로드 줄에 넣는다 ----
 
     def _open(self, sess, event_id, token, now, decoded, meta, clip, result, motion, location) -> list:
         sess.event_id, sess.created, sess.token = event_id, now, token
@@ -307,9 +311,12 @@ class EventReporter:
             sess.last_clip_ms, sess.last_clip_mono = captured_at, now
         return due
 
-    def _run(self, jobs: list) -> None:
+    def _run(self, sess: _Session, jobs: list) -> None:
         for job in jobs:
-            threading.Thread(target=self._upload, args=job, daemon=True).start()
+            try:
+                sess.uploader.submit(self._upload, *job)
+            except RuntimeError:  # 세션 정리 직후 (드묾): 따로 보낸다
+                threading.Thread(target=self._upload, args=job, daemon=True).start()
 
     @staticmethod
     def _upload(token: str, event_id: int, uploads: list) -> None:

@@ -34,7 +34,7 @@ AI (귀가 세션 첫 요청 때) → 백엔드 getVoiceProfileFeatures → 화�
 ## 공통
 
 - 기본 주소: `http://<AI 서버 IP>:8000`. 지금은 폰과 AI 서버가 같은 네트워크에 있어야 합니다(외부 HTTPS 주소는 AWS 배포 때 결정).
-- **인증**: 폰은 백엔드를 부를 때와 똑같이 `Authorization: Bearer <Firebase ID 토큰>`을 붙입니다. AI 서버는 토큰을 직접 검사하지 않고, 백엔드를 부를 때 **그 헤더를 그대로 넘기고** `X-Internal-Key`(AI 서버임을 알리는 키)를 함께 보냅니다. 사용자는 백엔드가 토큰으로 정하므로 요청에 `userId`를 넣지 않습니다.
+- **인증**: 폰은 백엔드를 부를 때와 똑같이 `Authorization: Bearer <Firebase ID 토큰>`을 붙입니다. AI 서버는 토큰을 직접 검사하지 않고, 백엔드를 부를 때 **그 헤더를 그대로 넘깁니다**. 백엔드는 앱 요청과 똑같이 Firebase 토큰만 확인하면 됩니다. AI 서버 전용 키(`X-Internal-Key`)는 개발 중에는 쓰지 않습니다(배포 때 필요하면 `AI_BACKEND_KEY`를 설정하면 헤더가 붙습니다). 사용자는 백엔드가 토큰으로 정하므로 요청에 `userId`를 넣지 않습니다.
 - 토큰이 없거나 `AI_BACKEND_URL`이 비어 있으면 분석만 하고 백엔드는 부르지 않습니다(화자 검증·이벤트 생성 생략). 개발·스크립트용입니다.
 - `AI_API_KEY`가 설정된 경우 `/api/ai/**`에 `X-API-Key` 헤더가 필요합니다(개발용 고정 키). 없거나 다르면 401입니다.
 - 요청 본문이 `AI_MAX_UPLOAD_MB`(기본 10MB, 파일마다)를 넘으면 413입니다. 3초 WAV는 약 96KB입니다.
@@ -179,7 +179,7 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
 
 ## 위험 이벤트 보고 (AI 서버 → 백엔드)
 
-`/api/ai/analyze` 결과가 위험이면 AI 서버가 폰의 토큰과 `X-Internal-Key`를 붙여 백엔드 기존 API를 부릅니다.
+`/api/ai/analyze` 결과가 위험이면 AI 서버가 폰의 토큰을 붙여 백엔드 기존 API를 부릅니다.
 
 **1. createEvent `POST /api/risk-events`** (응답 전에, 제한 시간 3초)
 
@@ -232,7 +232,7 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
 
 **백엔드에 요청한 변경**
 
-- AI 서버(토큰 + `X-Internal-Key`)가 `createEvent`, `uploadEventMedia`를 부를 수 있게 허용 (`uploadEventMedia`는 지금 관리자만 가능)
+- 사용자 토큰으로 `createEvent`, `uploadEventMedia`를 부를 수 있게 허용 (`uploadEventMedia`는 지금 관리자만 가능)
 - AI가 만든 PENDING 이벤트는 **보호자 알림을 보내지 않고**, 폰이 확인 질문 응답으로 상태를 확정할 때 알림 (지금은 생성 즉시 알림이라 "괜찮아요" 응답과 맞지 않음)
 
 ## POST /api/ai/voice-profiles (extractVoiceProfile, FD-016 음성 등록)
@@ -288,7 +288,7 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
 
 ### 백엔드로 보내는 값 (registerVoiceProfile / updateVoiceProfile)
 
-`multipart/form-data`, 헤더: 폰의 `Authorization` 그대로 + `X-Internal-Key`
+`multipart/form-data`, 헤더: 폰의 `Authorization` 그대로
 
 | 파트 | 내용 |
 |---|---|
@@ -339,7 +339,6 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
 ```
 GET /api/voice-profiles/me/features
 Authorization: <폰이 보낸 Firebase ID 토큰 그대로>
-X-Internal-Key: <AI_BACKEND_KEY와 같은 값>
 ```
 
 | 응답 | 의미 |
@@ -358,7 +357,7 @@ X-Internal-Key: <AI_BACKEND_KEY와 같은 값>
 }
 ```
 
-임베딩은 민감 정보라 `getVoiceProfile`(`/api/voice-profiles/me`)처럼 앱에 주지 않고, 내부 키가 있는 요청에만 돌려줍니다. camelCase와 snake_case 모두 받습니다. AI 서버 설정: `AI_BACKEND_URL`(예: `http://<백엔드>:8080`), `AI_BACKEND_KEY`.
+`getVoiceProfile`(`/api/voice-profiles/me`)과 달리 임베딩까지 돌려주는 AI 서버용 API입니다(배포 때는 AI 서버 전용 키로 막을 예정). camelCase와 snake_case 모두 받습니다. AI 서버 설정: `AI_BACKEND_URL`(예: `http://<백엔드>:8080`).
 
 백엔드 없이 시연할 때는 `AI_DEMO_PROFILE`에 프로필 JSON 파일(`scripts/enroll_profile.py` 결과나 `/api/ai/voice-profiles` 응답) 경로를 넣으면 모든 세션에 그 프로필을 씁니다.
 
@@ -383,8 +382,8 @@ X-Internal-Key: <AI_BACKEND_KEY와 같은 값>
 ## 다른 팀에 요청한 것
 
 **백엔드**
-- `getVoiceProfileFeatures` `GET /api/voice-profiles/me/features` 신규 (토큰 + 내부 키)
-- AI 서버(토큰 + `X-Internal-Key`)가 `registerVoiceProfile`·`updateVoiceProfile`·`createEvent`·`uploadEventMedia`를 부를 수 있게 허용
+- `getVoiceProfileFeatures` `GET /api/voice-profiles/me/features` 신규 (사용자 토큰)
+- 사용자 토큰으로 AI 서버가 `registerVoiceProfile`·`updateVoiceProfile`·`createEvent`·`uploadEventMedia`를 부를 수 있게 허용
 - `voice_profiles.baseline_details JSONB` 컬럼
 - AI가 만든 PENDING 이벤트는 확정 때 보호자 알림, 확인 질문 응답용 상태 값(예: `CONFIRMED`·`DISMISSED`)
 - 파일 크기: 등록 요청은 파일마다 10MB까지 올 수 있음(`spring.servlet.multipart.max-file-size=10MB`, `max-request-size=25MB`)

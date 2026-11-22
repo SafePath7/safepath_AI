@@ -9,7 +9,7 @@
 
 조회 순서
     1) AI_DEMO_PROFILE 파일 (시연·테스트용. 모든 세션에 같은 프로필, scripts/enroll_profile.py 결과)
-    2) 백엔드 getVoiceProfileFeatures (폰이 보낸 Firebase 토큰 + X-Internal-Key, app/backend.py)
+    2) 백엔드 getVoiceProfileFeatures (폰이 보낸 Firebase 토큰, app/backend.py)
        200 → 프로필, 404 → 프로필 없음, 그 밖의 오류 → RETRY_AFTER_ERROR_SEC 뒤 다시 시도
 
 받는 형식. snake_case·camelCase 모두 받는다.

@@ -1,8 +1,8 @@
 """
 AI 서버 → 백엔드 호출 (팀 API 명세 "AI 위험 분석" 섹션).
 
-인증: 폰이 AI 서버에 보낸 Authorization(Firebase ID 토큰)을 그대로 넘기고, AI 서버임을 알리는
-X-Internal-Key(AI_BACKEND_KEY)를 함께 보낸다. 사용자는 백엔드가 토큰으로 정한다(본문에 userId 없음).
+인증: 폰이 AI 서버에 보낸 Authorization(Firebase ID 토큰)을 그대로 넘긴다. AI_BACKEND_KEY를 설정했을 때만
+X-Internal-Key를 붙인다(개발 중에는 안 씀, 배포 때 AI 서버 전용 API를 막을 용도). 사용자는 백엔드가 토큰으로 정한다(본문에 userId 없음).
 
     getVoiceProfileFeatures  GET  /api/voice-profiles/me/features       화자 검증용 프로필 (404 = 미등록)
     registerVoiceProfile     POST /api/voice-profiles                   프로필 + 원본 녹음 (409면 아래로)
