@@ -49,21 +49,30 @@ def test_hard_hit_without_fall_is_impact():
     assert r["type"] == "motion_impact" and 0.5 < r["score"] < 0.7
 
 
-def test_struggle_needs_shaking_and_spinning():
+def test_big_peak_during_busy_motion_is_not_impact():
+    # 계속 큰 움직임(나머지 중앙값 2g) 속의 최댓값은 충격으로 세지 않는다
+    r = analyze_motion(make([2.0, 2.4, 1.6] * 10 + [5.0] + [2.0, 2.4, 1.6] * 10))
+    assert r["scores"]["motion_impact"] == 0.0
+
+
+def test_struggle_needs_force_and_spinning():
+    # 워치 실측 팔 휘두르기: 가속도 중앙값 약 3.8g, 흔들림 1.5g, 회전 평균 8rad/s
     rnd = np.random.default_rng(0)
-    shaking = 1.0 + rnd.normal(0, 2.0, 60)
-    r = analyze_motion(make(np.abs(shaking), gyro=6.0))
-    assert r["scores"]["struggle"] >= 0.5 and r["is_danger"] is True  # 몸싸움은 큰 충격도 함께 나와 유형은 더 큰 쪽
-    assert analyze_motion(make(np.abs(shaking), gyro=0.5))["scores"]["struggle"] < 0.5  # 회전 없음
+    swing = np.clip(3.8 + rnd.normal(0, 1.5, 60), 1.2, 8.0)
+    r = analyze_motion(make(swing, gyro=8.0))
+    assert r["type"] == "struggle" and r["score"] >= 0.5
+    assert analyze_motion(make(swing, gyro=1.0))["scores"]["struggle"] < 0.5  # 회전 없음
 
 
 def test_walking_and_running_are_not_danger():
+    # 워치 실측: 걷기 중앙값 1.0g·회전 2, 뛰기 중앙값 2.1g·흔들림 1.4g·회전 5rad/s·최댓값 7.7g(발 디딜 때마다)
     t = np.arange(60) / RATE
     walk = 1.0 + 0.4 * np.sin(2 * np.pi * 2 * t)
-    run = 1.0 + 0.9 * np.sin(2 * np.pi * 3 * t)
-    for m in (make(walk, gyro=2.0), make(run, gyro=4.0)):
+    run = 2.1 + 1.4 * np.sin(2 * np.pi * 3 * t)
+    run[::7] = 7.7
+    for m in (make(walk, gyro=2.0), make(np.clip(run, 0.7, 8.0), gyro=5.0)):
         r = analyze_motion(m)
-        assert r["is_danger"] is False and max(r["scores"].values()) <= 0.3
+        assert r["is_danger"] is False and max(r["scores"].values()) < 0.25  # 종합(COMBINE_MIN)에도 안 들어간다
 
 
 def test_missing_or_short_is_no_data():

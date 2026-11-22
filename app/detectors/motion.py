@@ -7,14 +7,18 @@
 학습 데이터가 없어 손목 착용 낙상 검출 문헌의 규칙(임계값) 방식으로 시작한다.
     fall          낙상: 자유낙하(가속도 크기 < FREE_FALL_G, FREE_FALL_SEC 이상) 뒤 1초 안에 충격, 그 뒤 거의 정지
     motion_impact 충격: 자유낙하 없이 큰 충격 (부딪힘·맞음)
-    struggle      격한 움직임: STRUGGLE_SEC 동안 가속도 흔들림과 회전 속도가 계속 큼 (몸싸움·뿌리치기)
-기준값 근거(초안):
-    - 충격: 손목 낙상 연구에서 충격 최댓값 2~3g 이상을 쓰는 경우가 많다(허리 3g 안팎보다 손목은 일상 동작 최댓값이 커서
-      단독 판정은 더 엄격히). 20Hz는 50ms 간격이라 짧은 충격의 최댓값을 놓쳐 실제보다 작게 잰다 → 문헌 값의 아래쪽을 쓴다.
-    - 자유낙하: 0.5~0.6g 미만 0.1~0.3초.
-    - 정지: 충격 뒤 1초 가속도 흔들림(표준편차) 0.2g 미만.
-    - 격한 움직임: 걷기·뛰기 손목 흔들림은 대략 0.3~1g, 회전 2~5rad/s. 그보다 크게 잡는다.
-워치로 넘어지기·휘두르기·걷기·뛰기를 녹음하면 다시 맞춘다(docs/models).
+    motion_impact 충격: 자유낙하 없이, 조용하던 중에 혼자 튀는 큰 충격 (부딪힘·맞음)
+    struggle      격한 움직임: STRUGGLE_SEC 동안 팔에 실린 힘(가속도 크기 중앙값)과 회전 속도가 계속 큼 (몸싸움·휘두르기)
+기준값 근거:
+    - 자유낙하: 0.5~0.6g 미만 0.1~0.3초 (문헌). 낙상 충격 2g (문헌, 20Hz는 최댓값을 놓치므로 아래쪽).
+    - 정지: 충격 뒤 1초 가속도 흔들림(표준편차) 0.2g 미만 (문헌).
+    - 워치 실측(2026-11-22, 갤럭시 워치 20Hz, 걷기·계단·뛰기·팔 휘두르기·손목 털기 각 10초):
+        뛰기도 손목 최댓값이 7.7g까지 나와(센서 최대 8g에서 잘림) 최댓값만으로는 충격과 못 가른다
+        → 충격은 '나머지 구간이 조용할 때(중앙값 1.3g 이하)'만 센다. 뛰기의 나머지 중앙값 약 2g.
+        가속도 흔들림(표준편차)은 뛰기 1.1~1.8g, 휘두르기 1.0~1.6g로 겹쳐 못 쓴다
+        → 가속도 크기 중앙값(뛰기 2.1g, 휘두르기 3.8g, 털기 4.3g)과 평균 회전 속도(뛰기 최대 5.7, 휘두르기 7.3~8.9,
+          털기 17~22rad/s)를 함께 본다. 걷기·계단은 중앙값 1.0g, 회전 2rad/s 안팎.
+    넘어지기 녹음과 여러 사람의 뛰기(전력 질주)가 오면 다시 맞춘다(docs/models).
 
 점수는 각 유형의 기준을 딱 넘을 때 0.5가 되도록 맞춘다(app/risk.py와 같은 눈금).
 """
@@ -30,9 +34,11 @@ IMPACT_G = 3.0  # 자유낙하 없이 이만큼이면 충격 (0.5점)
 IMPACT_FULL_G = 6.0  # 1점
 STILL_STD_G = 0.2
 STILL_SEC = 1.0
+CALM_G = 1.3  # 충격 앞뒤를 뺀 나머지 가속도 중앙값이 이 이하면 '조용하던 중' (뛰기 약 2g)
+BUSY_G = 1.8  # 이 이상이면 충격으로 안 본다
 STRUGGLE_SEC = 1.5
-STRUGGLE_STD_G = 1.2  # 0.5점
-STRUGGLE_GYRO = 4.0  # rad/s, 평균 회전 속도 (0.5점)
+STRUGGLE_ACC_G = 3.0  # 가속도 크기 중앙값 (0.5점). 뛰기 2.1g, 휘두르기 3.8g
+STRUGGLE_GYRO = 7.0  # rad/s, 평균 회전 속도 (0.5점). 뛰기 최대 5.7, 휘두르기 7.3 이상
 MIN_SAMPLES = 10
 
 TYPES = ("fall", "motion_impact", "struggle")
@@ -118,16 +124,28 @@ def score_fall(t, acc) -> tuple[float, float | None]:
     return round(float(min(best, 1.0)), 4), ff_len
 
 
+def score_impact(t, acc) -> float:
+    """조용하던 중에 혼자 튀는 큰 충격. 뛰기·휘두르기처럼 계속 큰 움직임의 최댓값은 세지 않는다."""
+    peak_i = int(np.argmax(acc))
+    level = _ramp(float(acc[peak_i]), 1.5, IMPACT_G, IMPACT_FULL_G)
+    rest = np.abs(t - t[peak_i]) > 0.3
+    if rest.sum() < 5:
+        return round(level, 4)
+    busy = float(np.median(acc[rest]))
+    calm = 1.0 if busy <= CALM_G else max(0.0, 1 - (busy - CALM_G) / (BUSY_G - CALM_G))
+    return round(level * calm, 4)
+
+
 def score_struggle(t, acc, gyro) -> float:
-    """STRUGGLE_SEC 창을 밀어 가며 가속도 흔들림·회전 속도가 둘 다 큰 구간."""
+    """STRUGGLE_SEC 창을 밀어 가며 팔에 실린 힘(가속도 중앙값)과 회전 속도가 둘 다 큰 구간."""
     best = 0.0
     for i in range(len(t)):
         w = (t >= t[i]) & (t < t[i] + STRUGGLE_SEC)
         if w.sum() < 10 or t[w][-1] - t[i] < STRUGGLE_SEC * 0.8:
             break
-        shake = _ramp(float(acc[w].std()), 0.3, STRUGGLE_STD_G, STRUGGLE_STD_G * 2)
-        spin = _ramp(float(gyro[w].mean()), 1.0, STRUGGLE_GYRO, STRUGGLE_GYRO * 2)
-        best = max(best, min(shake, spin))  # 둘 다 커야 한다 (뛰기는 흔들림만, 손목 돌리기는 회전만 큼)
+        force = _ramp(float(np.median(acc[w])), 1.5, STRUGGLE_ACC_G, STRUGGLE_ACC_G * 1.5)
+        spin = _ramp(float(gyro[w].mean()), 5.5, STRUGGLE_GYRO, STRUGGLE_GYRO * 1.7)
+        best = max(best, min(force, spin))  # 둘 다 커야 한다 (뛰기는 둘 다 기준 아래, 손목 돌리기는 회전만 큼)
     return round(best, 4)
 
 
@@ -143,8 +161,7 @@ def analyze_motion(motion: dict | None) -> dict:
     t, acc, gyro = parsed
     fall, ff_len = score_fall(t, acc)
     peak = float(acc.max())
-    impact = round(_ramp(peak, 1.5, IMPACT_G, IMPACT_FULL_G), 4)
-    scores = {"fall": fall, "motion_impact": impact, "struggle": score_struggle(t, acc, gyro)}
+    scores = {"fall": fall, "motion_impact": score_impact(t, acc), "struggle": score_struggle(t, acc, gyro)}
     kind = max(scores, key=scores.get)
     score = float(scores[kind])
     return {
