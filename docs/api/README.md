@@ -57,14 +57,14 @@ AI (귀가 세션 첫 요청 때) → 백엔드 getVoiceProfileFeatures → 화�
 | `session_id` | 예* | 문자열 ≤64 | 귀가 세션 ID (`startSession` 응답의 UUID). 없으면 화자 검증·이벤트 생성 안 함 |
 | `seq` | 예* | 정수 ≥0 | 3초 창의 마지막 조각 순번 (`WatchVoiceSender`의 `seq`) |
 | `captured_at` | 예* | 정수 ≥0 | 3초 창의 마지막 조각 녹음 시각, Unix epoch 밀리초. 이벤트의 `detectedAt`이 됩니다 |
-| `motion` | 아니오 | JSON 문자열 | 같은 3초 구간의 워치 움직임. `{"rate_hz": 20, "samples": [[t_ms, ax, ay, az, gx, gy, gz], ...]}` (가속도 m/s², 자이로 rad/s). `t_ms`는 센서가 측정한 시각을 Unix epoch 밀리초로 바꾼 값이고, `captured_at`과 같은 워치 시계를 씁니다. 구간은 `captured_at - 3000 < t_ms ≤ captured_at`이고 시각 순으로 보냅니다. 샘플이 없으면 필드를 빼 주세요. |
+| `motion` | 아니오 | JSON 문자열 | 같은 3초 구간의 움직임. `{"rate_hz": 20, "source": "watch", "samples": [[t_ms, ax, ay, az, gx, gy, gz], ...]}` (가속도 m/s² 중력 포함, 자이로 rad/s). `source`는 `watch`(기본) 또는 `phone`(워치 미연결 시 폰 센서, FD-017). `t_ms`는 센서가 측정한 시각을 Unix epoch 밀리초로 바꾼 값이고, `captured_at`과 같은 워치 시계를 씁니다. 구간은 `captured_at - 3000 < t_ms ≤ captured_at`이고 시각 순으로 보냅니다. 샘플이 없으면 필드를 빼 주세요. |
 | `lat`, `lng` | 아니오 | 실수 | 폰의 현재 위치 (위도 -90~90, 경도 -180~180) |
 | `accuracy_m` | 아니오 | 실수 ≥0 | 위치 정확도(m) |
 | `location_at` | 아니오 | 정수 ≥0 | 위치 측정 시각, epoch 밀리초 |
 
 \* 형식상 선택이지만 폰은 매번 보내 주세요. HTTP 요청은 도착 순서가 보장되지 않으므로 순서는 `captured_at`으로, 빠진 조각은 `seq`로 판단합니다. 응답에 그대로 돌려주니 어느 요청의 결과인지 이 값으로 맞추면 됩니다.
 
-움직임·위치는 지금은 위험도 계산에 쓰지 않고(움직임 점수 FD-017은 이후 추가), 위험 이벤트의 근거 데이터(`sensor`)로 백엔드에 넘깁니다. 형식이 틀린 `motion`은 400입니다.
+움직임은 낙상·충격·격한 움직임 점수(FD-017)로 위험도에 들어갑니다. 위치는 아직 위험도에 쓰지 않고 위험 이벤트의 근거 데이터(`sensor`)로만 넘깁니다. 형식이 틀린 `motion`은 400, 샘플이 10개보다 적으면 움직임은 빼고 계산합니다.
 
 ```sh
 curl -X POST "http://localhost:8000/api/ai/analyze" -H "Authorization: Bearer $ID_TOKEN" \
@@ -106,6 +106,7 @@ val request = Request.Builder().url("$aiBaseUrl/api/ai/analyze")
   "risk_score": 1.0,
   "risk_type": "danger_phrase",
   "is_danger": true,
+  "signals": [{"type": "danger_phrase", "score": 1.0}, {"type": "fall", "score": 0.62}],
   "whisper": {
     "status": "ok", "text": "살려주세요", "score": 1.0, "is_danger": true,
     "matches": [{"phrase": "살려주세요", "heard": "살려주세요", "exact": true, "score": 1.0}]
@@ -115,12 +116,16 @@ val request = Request.Builder().url("$aiBaseUrl/api/ai/analyze")
     "categories": {"scream": 0.0123, "shout": 0.004, "glass_break": 0.0, "impact": 0.001},
     "hits": []
   },
+  "loudness": {"status": "ok", "score": 0.04, "is_danger": false, "peak_dbfs": -9.7, "background_dbfs": -46.0,
+               "jump_db": 36.3, "speech_dbfs": -22.0, "over_speech_db": 12.3, "peak_at_sec": 1.2},
+  "motion": {"status": "ok", "score": 0.62, "type": "fall", "is_danger": true, "source": "watch", "samples": 60,
+             "scores": {"fall": 0.62, "motion_impact": 0.25, "struggle": 0.0}, "peak_g": 2.3, "free_fall_sec": 0.25},
   "speaker": {"status": "no_profile", "similarity": null, "is_user": null, "pitch_ratio": null,
               "volume_delta_db": null, "agitation": null, "boost": 0.0, "applied": 0.0}
 }
 ```
 
-폰이 쓰는 값은 `risk_score`, `risk_type`, `is_danger`, `event_id`입니다. `whisper`·`yamnet`·`speaker`는 모델별 근거(로그·디버깅용)입니다.
+폰이 쓰는 값은 `risk_score`, `risk_type`, `is_danger`, `event_id`입니다. `signals`·`whisper`·`yamnet`·`loudness`·`motion`·`speaker`는 신호별 근거(로그·디버깅용)입니다.
 
 | 필드 | 설명 |
 |---|---|
@@ -131,11 +136,14 @@ val request = Request.Builder().url("$aiBaseUrl/api/ai/analyze")
 | **`risk_score`** | 종합 위험도 0~1 (FD-018). 0.5 이상이면 위험 |
 | **`risk_type`** | 위험 유형 (아래 표). 위험이 아니면 `null` |
 | **`is_danger`** | `risk_score`가 `AI_RISK_THRESHOLD`(SDS TBD-5, 기본 0.5) 이상이면 `true` |
+| `signals` | 종합에 쓴 신호와 점수(큰 순서). 여러 신호가 함께 나왔는지 볼 때 씁니다 |
 | **`event_id`** | 백엔드 위험 이벤트 id. 이 창에서 만들었거나(`created`) 확인 대기 중인 이벤트에 묶였으면(`grouped`) 값이 있고, 아니면 `null`. 폰은 이 id로 워치 확인 질문을 띄우고 응답을 `PATCH /api/risk-events/{eventId}/status`로 보냅니다. |
 | `event_status` | `created` 새로 만듦 / `grouped` 대기 중 이벤트에 묶음 / `none` 위험 아님 / `failed` 백엔드 생성 실패 / `off` 토큰·세션·백엔드 설정 없음 |
 | `whisper.status` | `ok` 인식함 / `silence` 무음 / `no_speech` 말소리 없음 / `error` 인식 실패 / `skipped` 더미 모드. `ok`가 아니면 점수 0 (FD-014) |
 | `whisper.text` / `score` / `matches` | 인식 텍스트, 위험 문구 점수 0~1, 찾은 위험 문구 |
-| `yamnet.score` / `type` / `categories` / `hits` | 위험 음향 점수 0~1과 유형, 유형별 점수, 임계값 이상인 YAMNet 클래스 (FD-015) |
+| `yamnet.categories` | 소리 종류별 YAMNet 점수. 지금은 판정이 아니라 큰 소리의 이름(`scream` 등)을 붙이는 데만 씁니다 |
+| `loudness` | 갑자기 큰 소리 점수와 근거: 가장 큰 순간 음량, 배경 음량, 배경 대비 상승(`jump_db`), 평소 말소리 대비(`over_speech_db`) |
+| `motion` | 움직임 점수와 유형(`fall`·`motion_impact`·`struggle`), 최대 가속도(g), 자유낙하 길이. 움직임이 없으면 `status: no_data` |
 | `speaker` | 화자 검증 결과 ([아래](#응답의-speaker)). 음성 프로필이 있을 때만 `status: ok` |
 
 `event_status: failed`(백엔드 꺼짐 등)여도 `is_danger`는 그대로 옵니다. 이때 폰은 위험 표시를 하고, 다음 창에서 다시 위험이면 AI 서버가 이벤트 생성을 다시 시도합니다.
@@ -147,18 +155,56 @@ val request = Request.Builder().url("$aiBaseUrl/api/ai/analyze")
 | 값 | 의미 | 근거 |
 |---|---|---|
 | `danger_phrase` | 위험 문구 ("살려주세요", "도와주세요", "놔줘" 등) | Whisper (FD-014) |
-| `scream` | 비명 | YAMNet (FD-015) |
-| `shout` | 고함 | YAMNet |
-| `glass_break` | 유리 파손 | YAMNet |
-| `impact` | 충격음 (부딪힘·쿵·총성·폭발) | YAMNet |
+| `scream` | 갑자기 큰 소리 + 비명으로 들림 | 큰 소리 + YAMNet 이름 (FD-015) |
+| `shout` | 갑자기 큰 소리 + 고함 | 〃 |
+| `glass_break` | 갑자기 큰 소리 + 유리 파손 | 〃 |
+| `impact` | 갑자기 큰 소리 + 충격음 (부딪힘·쿵·총성·폭발) | 〃 |
+| `loud_sound` | 갑자기 큰 소리 (종류 모름) | 큰 소리 |
+| `fall` | 낙상 (자유낙하 → 충격 → 정지) | 움직임 (FD-017) |
+| `motion_impact` | 강한 충격 (넘어짐 없이 부딪힘·맞음) | 움직임 |
+| `struggle` | 격한 움직임 (흔들림과 회전이 계속 큼: 몸싸움·뿌리치기) | 움직임 |
 
-움직임(FD-017)이 붙으면 `fall` 등 유형이 추가됩니다.
+### 위험도 계산 (FD-018)
 
-### 위험도 계산 (FD-018 1단계)
+1. **눈금 맞추기**: 신호마다 위험 기준이 달라서(위험 문구 0.5 등) 각 점수를 **자기 기준이 0.5가 되도록** 0~1로 맞춥니다.
+2. **여러 신호 종합 (noisy-OR)**: `risk_score = 1 − (1 − 음성)(1 − 소리)(1 − 움직임)`.
+   - 신호 하나면 그 점수 그대로라 단독 판정은 전과 같습니다.
+   - 따로는 애매한 신호가 함께 나오면 올라갑니다(FR-AI-05). 예: 큰 소리 0.35 + 낙상 0.35 → 0.58 위험.
+   - 0.25(`AI_COMBINE_MIN`) 미만의 작은 신호는 가장 큰 신호가 아니면 더하지 않아 잡음이 쌓이지 않습니다.
+   - 결과가 없는 신호(인식 실패, 움직임 없음)는 빼고 계산합니다(SDS: 일부 결과 누락 → 남은 결과로 계산).
+3. **화자 검증**: 본인 목소리가 평소보다 높고 클 때 위험도를 최대 0.15 올립니다([화자 검증](#화자-검증-getvoiceprofilefeatures)).
 
-모델마다 위험 기준이 다릅니다(위험 문구 0.5, 위험 음향 0.3). 그래서 각 점수를 **자기 기준이 0.5가 되도록** 0~1로 다시 맞춘 뒤 가장 큰 값을 `risk_score`로, 그 모델의 유형을 `risk_type`으로 씁니다. 인식 실패처럼 결과가 없는 모델은 빼고 계산합니다(SDS: 일부 결과 누락 → 남은 결과로 계산). 화자 검증은 본인 목소리가 평소보다 높고 클 때 위험도를 최대 0.15 올립니다([화자 검증](#화자-검증-getvoiceprofilefeatures)). 움직임 점수는 이후 같은 방식으로 더합니다.
+`risk_type`은 가장 큰 신호의 유형입니다. 위치는 판단 근거(위험 지역 등)가 아직 없어 넣지 않습니다.
 
-### 위험 음향 유형 (FD-015)
+### 갑자기 큰 소리 (FD-015 변경, TBD-5)
+
+소리 종류를 맞히는 대신 **갑자기, 평소 말소리보다 훨씬 크게** 났는지로 판정합니다(`AI_SOUND_MODE=loudness`, 기본). 모델 없이 파형에서 0.1초마다 음량(dBFS)을 잽니다. 두 조건을 모두 넘어야 위험(0.5점)입니다.
+
+| 조건 | 기준 (초안) | 근거 |
+|---|---|---|
+| 갑자기: 가장 큰 순간 − 배경 음량 | +15dB (`AI_LOUD_JUMP_DB`), +25dB면 1점 | 충격성 소음은 배경보다 10~20dB 이상 순간 상승 (ISO 1996-1, 음향 이벤트 검출) |
+| 크게: 가장 큰 순간 − 평소 말소리 음량 | +16dB (`AI_LOUD_OVER_SPEECH_DB`) | 평소 대화 약 60dB SPL, 고함 80~90dB SPL → +10~20dB |
+
+- 배경 음량은 그 세션 최근 30초의 조용한 쪽 음량이라 시끄러운 길에서는 기준도 올라갑니다. 완전 무음(워치 녹음 시작 등)은 뺍니다.
+- 평소 말소리 음량은 음성 프로필의 `baseline_volume`이고, 프로필이 없으면 −22dBFS(`AI_LOUD_SPEECH_REF_DBFS`, 워치 실측 말소리 중앙값 근처)입니다.
+- 이 워치는 평소 말소리의 큰 순간이 이미 −9dBFS라서 절대 음량 기준은 쓰지 않습니다. 실제 워치 평소 말투 녹음 11개 창은 모두 0.14점 이하였습니다.
+- YAMNet은 큰 소리가 났을 때 이름(아래 표, 점수 0.15 이상)을 붙이는 데만 씁니다. `AI_SOUND_MODE=yamnet`이면 예전처럼 YAMNet 점수로 판정합니다.
+- 기준값은 문헌 초안이라 워치로 고함·박수·문 쾅·길거리 소리를 녹음하면 다시 맞춥니다.
+
+### 격한 움직임 (FD-017)
+
+학습 데이터가 없어 손목 착용 낙상 검출 문헌의 규칙 방식으로 시작합니다. 가속도 크기는 g(중력 = 1g) 기준입니다.
+
+| 유형 | 판정 (초안) |
+|---|---|
+| `fall` | 자유낙하(0.6g 미만, 0.15초 이상) → 1초 안에 충격(2g 이상) → 1초 정지(흔들림 0.2g 미만). 자유낙하 + 기준 충격이면 약 0.6, 정지까지 확인되면 0.8 이상 |
+| `motion_impact` | 자유낙하 없이 큰 충격 3g에서 0.5, 6g에서 1 |
+| `struggle` | 1.5초 동안 가속도 흔들림(표준편차) 1.2g 이상 **그리고** 평균 회전 속도 4rad/s 이상 (뛰기는 흔들림만, 손목 돌리기는 회전만 커서 제외) |
+
+- 20Hz는 50ms 간격이라 짧은 충격의 최댓값을 실제보다 작게 잽니다. 그래서 문헌 값의 아래쪽을 씁니다.
+- 걷기·뛰기 합성 신호는 0.3점 이하였습니다. 실제 넘어지기·휘두르기·걷기·뛰기 녹음으로 다시 맞춥니다.
+
+### 소리 이름 (YAMNet)
 
 | `type` | SDS 표현 | YAMNet 클래스 |
 |---|---|---|
@@ -204,6 +250,9 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
   "riskScore": 0.82, "riskType": "danger_phrase",
   "voice": {"text": "살려주세요", "score": 0.9, "matches": [...]},
   "sound": {"score": 0.41, "categories": {"scream": 0.41, "shout": 0.1, "glass_break": 0.0, "impact": 0.0}},
+  "loudness": {"score": 0.71, "peak_dbfs": -3.5, "background_dbfs": -44.0, "jump_db": 40.5, "over_speech_db": 18.5, ...},
+  "motionScore": {"status": "ok", "score": 0.62, "type": "fall", "scores": {...}, "peak_g": 2.3, "free_fall_sec": 0.25, "source": "watch"},
+  "signals": [{"type": "scream", "score": 0.71}, {"type": "fall", "score": 0.62}],
   "speaker": {"status": "ok", "is_user": true, "similarity": 0.62, "agitation": 0.7, "applied": 0.1},
   "location": {"lat": 37.5665, "lng": 126.978, "accuracy_m": 12.0, "location_at": 1763279999500},
   "motion": {"rate_hz": 20, "samples": [[...]]}

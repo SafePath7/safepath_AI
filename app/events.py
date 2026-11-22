@@ -48,6 +48,10 @@ DESCRIPTIONS = {
     "shout": "고함 감지",
     "glass_break": "유리 깨지는 소리 감지",
     "impact": "충격음 감지",
+    "loud_sound": "갑자기 큰 소리 감지",
+    "fall": "낙상 감지",
+    "motion_impact": "강한 충격 감지",
+    "struggle": "격한 움직임 감지",
 }
 
 
@@ -57,10 +61,14 @@ def iso_utc(ms: int | None) -> str:
 
 
 def describe(result: dict) -> str:
+    """예: "비명 감지 + 낙상 감지 (위험도 0.91)", "위험 문구 감지: '살려주세요' (위험도 0.82)"."""
     kind = result["risk_type"]
     text = DESCRIPTIONS.get(kind, "위험 감지")
     if kind == "danger_phrase" and result.get("whisper", {}).get("text"):
         text += f": '{result['whisper']['text'][:200]}'"
+    others = [s["type"] for s in result.get("signals") or [] if s["type"] != kind and s["score"] >= 0.25]
+    for other in dict.fromkeys(others):
+        text += f" + {DESCRIPTIONS.get(other, other)}"
     return f"{text} (위험도 {result['risk_score']:.2f})"
 
 
@@ -75,6 +83,10 @@ def sensor_report(result: dict, meta: dict, motion: dict | None, location: dict 
         "riskType": result["risk_type"],
         "voice": {"text": whisper.get("text"), "score": whisper.get("score"), "matches": whisper.get("matches")},
         "sound": {"score": yamnet.get("score"), "categories": yamnet.get("categories")},
+        "loudness": result.get("loudness"),
+        "motionScore": {k: (result.get("motion") or {}).get(k) for k in ("status", "score", "type", "scores", "peak_g",
+                                                                          "free_fall_sec", "source")},
+        "signals": result.get("signals"),
         "speaker": {k: speaker.get(k) for k in ("status", "is_user", "similarity", "agitation", "applied")},
         "location": location,
         "motion": motion,

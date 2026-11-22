@@ -48,6 +48,17 @@ YAMNET_THRESHOLD: float = float(_str("AI_YAMNET_THRESHOLD", "0.3"))
 # 전체 평균은 10초 청크(20프레임)에서 0.5초짜리 유리 파손음을 1/10 이하로 희석시키므로 상위 k개만 쓴다.
 # k=2(약 1초)는 한 프레임짜리 순간 잡음에 반응하지 않으면서 짧은 사건은 잡는 절충값이다.
 YAMNET_TOP_K: int = max(1, int(_str("AI_YAMNET_TOP_K", "2")))
+# 위험 음향 판정 방식 (TBD-5): loudness = 갑자기 큰 소리(app/detectors/loudness.py), YAMNet은 소리 이름만 붙임
+#                               yamnet = 예전 방식(YAMNet 위험 클래스 점수로 판정)
+SOUND_MODE: str = _str("AI_SOUND_MODE", "loudness").lower()
+# 갑자기 큰 소리: 배경보다 LOUD_JUMP_DB(+LOUD_SPAN_DB면 1점) 그리고 평소 말소리보다 LOUD_OVER_SPEECH_DB 커야 위험
+# 평소 말소리 = 음성 프로필 baseline_volume, 없으면 LOUD_SPEECH_REF_DBFS (워치 실측 말소리 구간 중앙값 근처)
+LOUD_JUMP_DB: float = float(_str("AI_LOUD_JUMP_DB", "15"))
+LOUD_SPAN_DB: float = float(_str("AI_LOUD_SPAN_DB", "10"))
+LOUD_OVER_SPEECH_DB: float = float(_str("AI_LOUD_OVER_SPEECH_DB", "16"))
+LOUD_SPEECH_REF_DBFS: float = float(_str("AI_LOUD_SPEECH_REF_DBFS", "-22"))
+# 큰 소리에 YAMNet 이름(scream 등)을 붙이는 최소 점수. 못 넘으면 loud_sound
+SOUND_LABEL_MIN: float = float(_str("AI_SOUND_LABEL_MIN", "0.15"))
 
 # 화자 검증 결합 (음성 프로필이 있을 때). 본인 목소리가 평소보다 높고 크면 위험도를 최대 VERIFY_BOOST_MAX만큼 올린다.
 #   점수를 깎거나 판정을 막지는 않는다. 다급한 목소리는 본인이어도 유사도가 크게 떨어지기 때문이다(FD-016 평가).
@@ -72,6 +83,8 @@ PROFILE_IDLE_SEC: float = float(_str("AI_PROFILE_IDLE_SEC", "600"))
 # 종합 위험도 임계값 (SDS FD-018 TBD-5). risk_score가 이 값 이상이면 is_danger.
 # risk_score는 모델별 점수를 '각자의 임계값 = 0.5'로 맞춘 값이라, 0.5면 모델별 임계값과 같은 판정이다 (app/risk.py).
 RISK_THRESHOLD: float = float(_str("AI_RISK_THRESHOLD", "0.5"))
+# 여러 신호 종합(FD-018): 이 값 이상인 신호끼리만 noisy-OR로 합친다(작은 잡음 신호가 쌓여 위험이 되지 않게)
+COMBINE_MIN: float = float(_str("AI_COMBINE_MIN", "0.25"))
 # 위험 이벤트를 만든 뒤 이 시간(초) 안에 같은 세션에서 다시 위험이 나오면 같은 이벤트로 묶는다 (FD-019, TBD-6 확인 대기 시간).
 EVENT_GROUP_SEC: float = float(_str("AI_EVENT_GROUP_SEC", "30"))
 # 위험 이벤트를 만들 때 함께 올리는 직전 소리 길이(초). 평소에는 세션마다 이만큼만 메모리에 들고 있다.

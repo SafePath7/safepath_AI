@@ -48,8 +48,12 @@ def test_dummy_risk_matches_model_schema():
     from app.main import DUMMY_RESULT
     from app.risk import combine
 
-    assert {k: DUMMY_RESULT[k] for k in ("risk_score", "risk_type", "is_danger")} == combine(
+    assert {k: DUMMY_RESULT[k] for k in ("risk_score", "risk_type", "is_danger", "signals")} == combine(
         DUMMY_RESULT["whisper"], DUMMY_RESULT["yamnet"])
+    from app.detectors.loudness import empty_loudness_result
+    from app.detectors.motion import empty_motion_result
+    assert DUMMY_RESULT["loudness"].keys() == empty_loudness_result().keys()
+    assert DUMMY_RESULT["motion"].keys() == empty_motion_result("x").keys()
 
 
 def test_analyze_echoes_clip_meta():

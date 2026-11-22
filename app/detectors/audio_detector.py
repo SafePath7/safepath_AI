@@ -1,6 +1,6 @@
 """
-Whisper(위험 문구, FD-014) + YAMNet(위험 음향, FD-015) 병렬 탐지 모듈
-같은 오디오 클립을 두 모델에 동시에 넣고 결과를 합친다.
+Whisper(위험 문구, FD-014) + YAMNet(소리 이름, FD-015) 병렬 탐지 모듈
+같은 오디오 클립을 두 모델에 동시에 넣고, 갑자기 큰 소리(loudness)·움직임(FD-017)·화자 검증과 함께 종합한다.
 (cap_ai/audio_detector.py에서 옮김)
 """
 
@@ -218,11 +218,14 @@ def run_yamnet(yamnet_model, danger_index: dict, waveform: np.ndarray) -> dict:
 
 # ── 병렬 실행 ───────────────────────────────────────────────────
 def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None,
-                 profile_status: str = "off") -> dict:
-    """위험 문구·위험 음향(·화자 검증)을 병렬로 돌려 종합 위험도를 낸다.
+                 profile_status: str = "off", session_id: str | None = None, motion: dict | None = None) -> dict:
+    """위험 문구·소리·큰 소리·움직임(·화자 검증)을 돌려 종합 위험도를 낸다 (FD-018).
 
     profile: 사용자 음성 프로필(app.profiles). 없으면 화자 검증은 profile_status 상태로 건너뛴다.
+    session_id: 큰 소리의 기준이 되는 세션 배경 음량을 이어서 잰다. motion: 같은 3초 구간 움직임(FD-017).
     """
+    from app.detectors.loudness import analyze_loudness
+    from app.detectors.motion import analyze_motion
     from app.detectors.speaker import verify_result, verify_voice
 
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -231,6 +234,9 @@ def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None
         f_speaker = None
         if profile is not None and models.get("speaker") is not None:
             f_speaker = pool.submit(verify_voice, models["speaker"], waveform, profile)
+    speech_dbfs = (profile or {}).get("baseline_volume")  # 그 사람의 평소 말소리 음량
+    loudness_result = analyze_loudness(waveform, session_id, speech_dbfs=speech_dbfs)  # 계산이 가벼워 따로 안 돌림
+    motion_result = analyze_motion(motion)
     whisper_result = f_whisper.result()
     yamnet_result = f_yamnet.result()
     if f_speaker is None:
@@ -241,5 +247,6 @@ def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None
         except Exception:  # 화자 검증 실패가 위험 감지를 막지 않게
             log.exception("화자 검증 실패")
             speaker_result = verify_result("error")
-    risk = combine(whisper_result, yamnet_result, speaker_result)
-    return {**risk, "whisper": whisper_result, "yamnet": yamnet_result, "speaker": speaker_result}
+    risk = combine(whisper_result, yamnet_result, speaker_result, loudness_result, motion_result)
+    return {**risk, "whisper": whisper_result, "yamnet": yamnet_result, "loudness": loudness_result,
+            "motion": motion_result, "speaker": speaker_result}

@@ -50,6 +50,16 @@ DUMMY_RESULT = {
         "categories": {"scream": 0.0, "shout": 0.0, "glass_break": 0.0, "impact": 0.0},
         "hits": [],
     },
+    "signals": [],
+    "loudness": {  # 모델 모드와 같은 형식 (loudness.empty_loudness_result)
+        "status": "skipped", "score": 0.0, "is_danger": False,
+        "peak_dbfs": None, "background_dbfs": None, "jump_db": None, "speech_dbfs": None, "over_speech_db": None,
+        "peak_at_sec": None,
+    },
+    "motion": {  # 모델 모드와 같은 형식 (motion.empty_motion_result)
+        "status": "skipped", "score": 0.0, "type": None, "is_danger": False, "source": None, "samples": 0,
+        "scores": {"fall": 0.0, "motion_impact": 0.0, "struggle": 0.0}, "peak_g": None, "free_fall_sec": None,
+    },
     "speaker": {  # 모델 모드와 같은 형식 (speaker.verify_result)
         "status": "off",
         "similarity": None,
@@ -126,7 +136,7 @@ def clip_meta(session_id, seq, captured_at) -> dict:
 
 
 def parse_motion(raw: str | None) -> dict | None:
-    """motion: JSON {"rate_hz": 20, "samples": [[t_ms, ax, ay, az, gx, gy, gz], ...]} (FD-017, 점수는 아직 계산 안 함)."""
+    """motion: JSON {"rate_hz": 20, "source": "watch"|"phone", "samples": [[t_ms, ax, ay, az, gx, gy, gz], ...]} (FD-017)."""
     if not raw:
         return None
     try:
@@ -144,6 +154,18 @@ def location_of(lat, lng, accuracy_m, location_at) -> dict | None:
     return {"lat": lat, "lng": lng, "accuracy_m": accuracy_m, "location_at": location_at}
 
 
+def loud_log(r: dict | None) -> str:
+    if not r or r.get("status") != "ok":
+        return "-"
+    return f"{r['score']:.2f}(+{r['jump_db']}dB,{r['peak_dbfs']}dBFS)"
+
+
+def motion_log(r: dict | None, raw: dict | None) -> str:
+    if not r or r.get("status") != "ok":
+        return f"-({len(raw.get('samples', []))})" if raw else "-"
+    return f"{r['score']:.2f}({r['samples']},{r['peak_g']}g)"
+
+
 def speaker_log(sp: dict) -> str:
     if sp["status"] != "ok":
         return sp["status"]
@@ -159,7 +181,8 @@ async def run_analysis(waveform, dur: float | None, source: str, received_bytes:
         # 화자 검증용 프로필: 귀가 세션마다 한 번 받아 둔다. 받아 오는 중이면 검증 없이 분석한다.
         profile_status, profile = profile_store.get(meta["session_id"], token)
         # 추론은 동기 작업이므로 이벤트 루프를 막지 않게 스레드풀에서 돌린다.
-        result = await run_in_threadpool(analyze_clip, models, waveform, profile, profile_status)
+        result = await run_in_threadpool(analyze_clip, models, waveform, profile, profile_status,
+                                         meta["session_id"], motion)
     else:
         result = DUMMY_RESULT
     # 위험이면 백엔드에 위험 이벤트를 만들고(같은 세션 30초 안이면 묶음) id를 돌려준다
@@ -169,10 +192,11 @@ async def run_analysis(waveform, dur: float | None, source: str, received_bytes:
     # lag: 녹음 시각 → 분석 완료. 워치·서버 시계 차이가 섞여 있어 참고용(늘어나는지만 본다).
     lag = int(time.time() * 1000) - meta["captured_at"] if meta["captured_at"] else None
     log.info("analyze source=%s session=%s seq=%s bytes=%d duration=%s mode=%s "
-             "risk=%.2f type=%s speaker=%s event=%s/%s motion=%s location=%s processing_ms=%d lag_ms=%s",
+             "risk=%.2f type=%s loud=%s motion=%s speaker=%s event=%s/%s location=%s processing_ms=%d lag_ms=%s",
              source, meta["session_id"], meta["seq"], received_bytes, dur, mode(),
-             result["risk_score"], result["risk_type"], speaker_log(result["speaker"]), event_status, event_id,
-             len(motion.get("samples", [])) if motion else "-", "yes" if location else "-", processing_ms, lag)
+             result["risk_score"], result["risk_type"], loud_log(result.get("loudness")),
+             motion_log(result.get("motion"), motion), speaker_log(result["speaker"]), event_status, event_id,
+             "yes" if location else "-", processing_ms, lag)
     return {
         "session_id": meta["session_id"],
         "seq": meta["seq"],
