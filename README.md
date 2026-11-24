@@ -79,3 +79,33 @@ SafePath는 안전귀가를 지원하기 위한 캡스톤 프로젝트입니다.
 - [API](docs/api/README.md)
 - [개발 환경(Windows)](docs/setup/README.md)
 - [모델 정리(Whisper·YAMNet)](docs/models/README.md)
+
+## Docker로 실행
+
+Docker Desktop 등에서 Docker 데몬을 실행한 뒤 이 저장소 루트에서 빌드합니다. 기존 Python 로컬 실행 방법은 그대로 사용할 수 있습니다.
+
+```sh
+docker build -t safepath-ai .
+docker run --rm --name safepath-ai -p 8000:8000 safepath-ai
+```
+
+다른 터미널에서 `curl http://localhost:8000/health`를 실행하면 `mode`가 `dummy`, `models_loaded`가 빈 배열인 응답을 확인할 수 있습니다. 종료는 서버 터미널에서 Ctrl+C를 누릅니다. 컨테이너는 `0.0.0.0:8000`에서 수신하며 `-p`가 호스트 포트와 연결합니다.
+
+설정은 실행 시 전달합니다. 예를 들어 `docker run --rm -p 8000:8000 -e AI_BACKEND_URL=http://host.docker.internal:8080 safepath-ai`처럼 설정할 수 있습니다(Docker Desktop 기준). 또는 `.env.example`을 복사한 로컬 `.env`를 `docker run --rm -p 8000:8000 --env-file .env safepath-ai`로 전달합니다. 컨테이너의 `localhost`는 백엔드가 아니라 AI 컨테이너 자신입니다. 비밀값은 이미지에 넣지 않고 실행 환경에서 전달하세요. 백엔드 주소를 비우면 백엔드 호출을 생략합니다.
+
+### 실제 모델 사용
+
+기본 이미지는 모델 의존성을 포함하지 않으므로 모델용 이미지를 별도로 빌드하고 실행할 때 모델을 켭니다.
+
+```sh
+docker build --build-arg INSTALL_MODELS=1 -t safepath-ai-model .
+docker run --rm --name safepath-ai-model -p 8000:8000 \
+  -e AI_LOAD_MODELS=1 -e AI_MODEL_CACHE_DIR=/cache/models \
+  -e HF_HOME=/cache/huggingface -v safepath-model-cache:/cache safepath-ai-model
+```
+
+이 이미지는 CPU용 PyTorch와 `requirements-models.txt`의 의존성을 설치합니다. 빌드 크기와 시간, CPU·메모리 사용량이 더 크며 플랫폼에 맞는 패키지가 필요합니다. 최초 실행 시 인터넷으로 Whisper, YAMNet, ECAPA 가중치를 내려받아 시작이 오래 걸립니다. 볼륨은 YAMNet·ECAPA와 Hugging Face의 Whisper 캐시를 컨테이너 재생성 후에도 보존합니다. `/health`에서 `mode`가 `model`이고 `models_loaded`에 `whisper`, `yamnet`, `speaker`가 모두 있는지 확인하세요. 모델 다운로드 또는 로딩이 실패하면 서버가 정상 시작되지 않을 수 있으므로 `docker logs safepath-ai-model`을 확인하세요. 로컬 `models/`는 빌드에 포함하지 않으며, 별도 캐시를 쓰려면 컨테이너에 마운트해야 합니다.
+
+### 나중에 백엔드 Compose와 연결
+
+두 저장소가 같은 부모 폴더에 있고 AI 폴더가 `safepath_AI`라면 백엔드의 `compose.yaml`에서 AI 서비스의 `build.context`를 예를 들어 `../safepath_AI`로 지정합니다(경로는 Compose 파일 위치 기준). 컨테이너 포트는 `8000`이며, 호스트에서도 접근하려면 `ports: ["8000:8000"]`을 설정합니다. 같은 Compose 네트워크에서 AI가 백엔드를 호출할 때는 `AI_BACKEND_URL=http://<백엔드 서비스명>:<백엔드 컨테이너 포트>`를 사용하고, 백엔드가 AI를 호출할 때는 `http://<AI 서비스명>:8000`을 사용합니다. 기본값은 `AI_LOAD_MODELS=0`이고, 필요하면 `AI_BACKEND_KEY`, `AI_API_KEY` 등은 실행 환경이나 별도 환경변수 파일로 전달합니다. 실제 모델용 빌드는 `INSTALL_MODELS=1` 빌드 인자와 `AI_LOAD_MODELS=1` 실행 환경변수가 모두 필요합니다. 서비스명과 포트는 백엔드 프로젝트의 실제 설정에 맞춰 정해야 합니다.
