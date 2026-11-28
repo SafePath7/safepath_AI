@@ -10,6 +10,7 @@
 | 음성 프로필 분석 | extractVoiceProfile | POST | `/api/ai/voice-profiles` | AI 서버 | 폰 |
 | 음성 프로필 저장 | registerVoiceProfile (재등록: updateVoiceProfile) | POST (PUT) | `/api/voice-profiles` (`/api/voice-profiles/me`) | 백엔드 (기존) | AI 서버 |
 | 화자 검증용 음성 정보 조회 | getVoiceProfileFeatures | GET | `/api/voice-profiles/me/features` | 백엔드 (신규 요청) | AI 서버 |
+| 경로 이탈 상태 전달 | updateRouteStatus | POST | `/api/ai/route-status` | AI 서버 | 백엔드 |
 
 명세에 없는 개발용: `GET /health`(상태 확인), `POST /api/ai/analyze/pcm`(원시 PCM 입력).
 
@@ -25,6 +26,7 @@
 
 폰 (등록 녹음) → AI POST /api/ai/voice-profiles → 백엔드 registerVoiceProfile (원본 녹음 포함)
 AI (귀가 세션 첫 요청 때) → 백엔드 getVoiceProfileFeatures → 화자 검증에 사용
+백엔드 (경로 이탈·재진입이 바뀔 때만) → AI POST /api/ai/route-status → 위험도 보조 신호
 ```
 
 - AI 서버는 아무것도 저장하지 않습니다. 위험 이벤트·근거 데이터·음성 프로필은 모두 백엔드에 저장됩니다.
@@ -173,6 +175,7 @@ val request = Request.Builder().url("$aiBaseUrl/api/ai/analyze")
    - 0.25(`AI_COMBINE_MIN`) 미만의 작은 신호는 가장 큰 신호가 아니면 더하지 않아 잡음이 쌓이지 않습니다.
    - 결과가 없는 신호(인식 실패, 움직임 없음)는 빼고 계산합니다(SDS: 일부 결과 누락 → 남은 결과로 계산).
 3. **화자 검증**: 본인 목소리가 평소보다 높고 클 때 위험도를 최대 0.15 올립니다([화자 검증](#화자-검증-getvoiceprofilefeatures)).
+4. **경로 이탈**: 백엔드가 이탈 중이라고 알려 온 세션이면, 위 결과가 0.3(`AI_ROUTE_BOOST_MIN_BASE`) 이상일 때 0.1(`AI_ROUTE_BOOST`)을 더합니다. 이탈만으로는 위험이 아닙니다(길을 잘못 들거나 돌아가는 경우). 예: 애매한 위험 문구 0.42 + 이탈 → 0.52 위험. 응답과 증거 JSON의 `route`에 상태와 더한 값(`applied`)이 남습니다([경로 이탈](#post-apiairoute-status-updateroutestatus)).
 
 `risk_type`은 가장 큰 신호의 유형입니다. 위치는 판단 근거(위험 지역 등)가 아직 없어 넣지 않습니다.
 
@@ -223,6 +226,49 @@ WAV 머리말 없이 PCM 바이트만 보낼 때 씁니다. 응답은 `/api/ai/a
 - 본문: `application/octet-stream`, 16bit little-endian 모노 PCM
 - 쿼리: `sample_rate`(선택, 기본 16000), `session_id`, `seq`, `captured_at`. 움직임·위치는 받지 않습니다.
 - 바이트 길이가 홀수이거나 본문이 비면 400입니다.
+
+## POST /api/ai/route-status (updateRouteStatus)
+
+백엔드가 귀가 경로와 현재 위치로 경로 이탈을 판단해 **상태가 바뀔 때만** 알려 줍니다. AI는 따로 묻지 않습니다.
+
+- 신호를 받은 적 없는 세션은 이탈 안 함(기본)입니다.
+- 이탈(`deviated: true`)을 보낸 뒤 다른 신호가 없으면 계속 이탈로 봅니다.
+- 경로로 돌아오거나(재진입) 경로를 수정하면 `deviated: false`를 보냅니다. 두 경우는 같은 신호입니다.
+
+요청 (`application/json`, 백엔드 → AI. 개발 중에는 인증 없음):
+
+| 필드 | 필수 | 형식 | 설명 |
+|---|---|---|---|
+| `sessionId` | 예 | 문자열 | 귀가 세션 UUID (`/api/ai/analyze`의 `session_id`와 같은 값) |
+| `deviated` | 예 | boolean | `true` 이탈, `false` 재진입·경로 수정 |
+| `at` | 아니오 | ISO 8601 (`2026-11-28T12:00:00Z`) | 판단 시각. 이보다 늦게 도착한 이전 신호는 무시합니다 |
+| `distanceM` | 아니오 | 숫자 (m, 0 이상) | 경로까지 거리. 증거 JSON에 같이 남깁니다 |
+
+```json
+{"sessionId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "deviated": true, "at": "2026-11-28T12:00:00Z", "distanceM": 85.2}
+```
+
+응답 200 (지금 AI가 가진 상태):
+
+```json
+{"sessionId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "deviated": true, "since": 1795867200000, "distanceM": 85.2}
+```
+
+- `since`: 이탈이 시작된 시각(epoch ms). 이탈 중 같은 신호를 다시 보내면 시작 시각은 그대로이고 거리만 바뀝니다. 재진입이면 `null`.
+- 필드가 빠지거나 형식이 틀리면 422입니다.
+- AI는 세션별 상태를 메모리에만 둡니다. 그 세션의 분석·경로 신호가 10분(`AI_ROUTE_IDLE_SEC`) 동안 없으면 지웁니다.
+- AI 서버가 다시 시작되면 상태를 잊고 이탈 안 함으로 시작합니다. 이탈 중인 세션은 백엔드가 몇 분마다 상태를 다시 보내 주면 복구됩니다.
+- Docker Compose 안에서는 `http://ai:8000/api/ai/route-status`로 부릅니다.
+
+분석 응답(`/api/ai/analyze`)의 `route`:
+
+| 필드 | 설명 |
+|---|---|
+| `status` | `on_route`(이탈 안 함·신호 없음) / `deviated` |
+| `deviated` | 이탈 중이면 `true` |
+| `since` | 이탈 시작 시각(epoch ms), 이탈이 아니면 `null` |
+| `distance_m` | 마지막으로 받은 경로까지 거리 |
+| `applied` | 이번 위험도에 실제로 더한 값 (0 또는 0.1) |
 
 ## 위험 이벤트 보고 (AI 서버 → 백엔드)
 

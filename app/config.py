@@ -79,6 +79,11 @@ BACKEND_UPLOAD_TIMEOUT_SEC: float = float(_str("AI_BACKEND_UPLOAD_TIMEOUT_SEC", 
 DEMO_PROFILE: str | None = os.getenv("AI_DEMO_PROFILE", "").strip() or None
 # 프로필은 귀가 세션(session_id) 동안 보관한다. AI 서버는 세션 종료를 모르므로, 그 세션 요청이 이 시간(초) 동안 없으면 지운다.
 PROFILE_IDLE_SEC: float = float(_str("AI_PROFILE_IDLE_SEC", "600"))
+# 경로 이탈 (백엔드 → POST /api/ai/route-status). 이탈 중이면 위험도가 ROUTE_BOOST_MIN_BASE 이상일 때 ROUTE_BOOST를 더한다.
+# 이탈만으로는 위험이 아니다(길 잘못 듦·돌아감). 세션 신호가 ROUTE_IDLE_SEC 동안 없으면 상태를 지운다.
+ROUTE_BOOST: float = float(_str("AI_ROUTE_BOOST", "0.1"))
+ROUTE_BOOST_MIN_BASE: float = float(_str("AI_ROUTE_BOOST_MIN_BASE", "0.3"))
+ROUTE_IDLE_SEC: float = float(_str("AI_ROUTE_IDLE_SEC", "600"))
 
 # 종합 위험도 임계값 (SDS FD-018 TBD-5). risk_score가 이 값 이상이면 is_danger.
 # risk_score는 모델별 점수를 '각자의 임계값 = 0.5'로 맞춘 값이라, 0.5면 모델별 임계값과 같은 판정이다 (app/risk.py).

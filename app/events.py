@@ -88,6 +88,7 @@ def sensor_report(result: dict, meta: dict, motion: dict | None, location: dict 
                                                                           "free_fall_sec", "source")},
         "signals": result.get("signals"),
         "speaker": {k: speaker.get(k) for k in ("status", "is_user", "similarity", "agitation", "applied")},
+        "route": result.get("route"),
         "location": location,
         "motion": motion,
     }

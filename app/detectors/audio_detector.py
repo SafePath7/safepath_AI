@@ -218,11 +218,13 @@ def run_yamnet(yamnet_model, danger_index: dict, waveform: np.ndarray) -> dict:
 
 # ── 병렬 실행 ───────────────────────────────────────────────────
 def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None,
-                 profile_status: str = "off", session_id: str | None = None, motion: dict | None = None) -> dict:
+                 profile_status: str = "off", session_id: str | None = None, motion: dict | None = None,
+                 route: dict | None = None) -> dict:
     """위험 문구·소리·큰 소리·움직임(·화자 검증)을 돌려 종합 위험도를 낸다 (FD-018).
 
     profile: 사용자 음성 프로필(app.profiles). 없으면 화자 검증은 profile_status 상태로 건너뛴다.
     session_id: 큰 소리의 기준이 되는 세션 배경 음량을 이어서 잰다. motion: 같은 3초 구간 움직임(FD-017).
+    route: 그 세션의 경로 이탈 상태(app.route_state). 이탈 중이면 위험도를 조금 올린다.
     """
     from app.detectors.loudness import analyze_loudness
     from app.detectors.motion import analyze_motion
@@ -247,6 +249,10 @@ def analyze_clip(models: dict, waveform: np.ndarray, profile: dict | None = None
         except Exception:  # 화자 검증 실패가 위험 감지를 막지 않게
             log.exception("화자 검증 실패")
             speaker_result = verify_result("error")
-    risk = combine(whisper_result, yamnet_result, speaker_result, loudness_result, motion_result)
-    return {**risk, "whisper": whisper_result, "yamnet": yamnet_result, "loudness": loudness_result,
-            "motion": motion_result, "speaker": speaker_result}
+    route_result = dict(route) if route else None
+    risk = combine(whisper_result, yamnet_result, speaker_result, loudness_result, motion_result, route_result)
+    out = {**risk, "whisper": whisper_result, "yamnet": yamnet_result, "loudness": loudness_result,
+           "motion": motion_result, "speaker": speaker_result}
+    if route_result is not None:
+        out["route"] = route_result
+    return out

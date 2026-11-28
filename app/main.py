@@ -5,6 +5,7 @@ GET  /health                : 서버·모델 상태
 POST /api/ai/analyze        : analyzeRisk. 폰이 보내는 3초 WAV + 움직임·위치 → 위험도(0~1)·위험 유형.
                               위험이면 백엔드 createEvent·uploadEventMedia 호출 후 eventId 반환
 POST /api/ai/analyze/pcm    : 위와 같고 원시 PCM(16bit LE, mono)을 받는다 (개발·테스트용)
+POST /api/ai/route-status   : updateRouteStatus. 백엔드가 경로 이탈·재진입을 알려 준다(세션별 메모리, 위험도 보조 신호)
 POST /api/ai/voice-profiles : extractVoiceProfile. 음성 등록 녹음 → 화자 임베딩·평소 음량·피치 (FD-016)
                               → 백엔드 registerVoiceProfile(이미 있으면 updateVoiceProfile)로 저장
 
@@ -17,15 +18,18 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, ConfigDict, Field
 
 from app import backend, config
 from app.audio import check_pcm16, duration_sec, load_audio_file, load_pcm16, pcm16_duration_sec, pcm16_to_wav
 from app.events import reporter as event_reporter
 from app.profiles import save_demo
 from app.profiles import store as profile_store
+from app.route_state import store as route_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("safepath.ai")
@@ -172,6 +176,12 @@ def speaker_log(sp: dict) -> str:
     return f"sim={sp['similarity']:.2f},agit={sp['agitation']:.2f},+{sp['applied']:.2f}"
 
 
+def route_log(r: dict | None) -> str:
+    if not r or not r.get("deviated"):
+        return "-"
+    return f"deviated,+{r['applied']:.2f}"
+
+
 async def run_analysis(waveform, dur: float | None, source: str, received_bytes: int, meta: dict, started: float,
                        token: str | None, clip: tuple[str, bytes] | None,
                        motion: dict | None = None, location: dict | None = None) -> dict:
@@ -182,9 +192,9 @@ async def run_analysis(waveform, dur: float | None, source: str, received_bytes:
         profile_status, profile = profile_store.get(meta["session_id"], token)
         # 추론은 동기 작업이므로 이벤트 루프를 막지 않게 스레드풀에서 돌린다.
         result = await run_in_threadpool(analyze_clip, models, waveform, profile, profile_status,
-                                         meta["session_id"], motion)
+                                         meta["session_id"], motion, route_store.get(meta["session_id"]))
     else:
-        result = DUMMY_RESULT
+        result = {**DUMMY_RESULT, "route": route_store.get(meta["session_id"])}
     # 위험이면 백엔드에 위험 이벤트를 만들고(같은 세션 30초 안이면 묶음) id를 돌려준다
     event_id, event_status = await run_in_threadpool(
         event_reporter.report, result, meta, token, clip, motion, location)
@@ -192,10 +202,11 @@ async def run_analysis(waveform, dur: float | None, source: str, received_bytes:
     # lag: 녹음 시각 → 분석 완료. 워치·서버 시계 차이가 섞여 있어 참고용(늘어나는지만 본다).
     lag = int(time.time() * 1000) - meta["captured_at"] if meta["captured_at"] else None
     log.info("analyze source=%s session=%s seq=%s bytes=%d duration=%s mode=%s "
-             "risk=%.2f type=%s loud=%s motion=%s speaker=%s event=%s/%s location=%s processing_ms=%d lag_ms=%s",
+             "risk=%.2f type=%s loud=%s motion=%s speaker=%s route=%s event=%s/%s location=%s processing_ms=%d lag_ms=%s",
              source, meta["session_id"], meta["seq"], received_bytes, dur, mode(),
              result["risk_score"], result["risk_type"], loud_log(result.get("loudness")),
-             motion_log(result.get("motion"), motion), speaker_log(result["speaker"]), event_status, event_id,
+             motion_log(result.get("motion"), motion), speaker_log(result["speaker"]), route_log(result.get("route")),
+             event_status, event_id,
              "yes" if location else "-", processing_ms, lag)
     return {
         "session_id": meta["session_id"],
@@ -279,6 +290,27 @@ async def analyze_pcm(
     dur = pcm16_duration_sec(data, sr)
     clip = (f"voice_{captured_at or 'pcm'}.wav", pcm16_to_wav(data, sr))
     return await run_analysis(waveform, dur, "pcm", len(data), meta, started, authorization, clip)
+
+
+class RouteStatus(BaseModel):
+    """백엔드가 보내는 경로 이탈 상태 (camelCase)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: str = Field(alias="sessionId", min_length=1, max_length=64)
+    deviated: bool
+    at: datetime | None = None  # 판단 시각 (ISO 8601). 늦게 도착한 이전 신호를 무시하는 데 쓴다
+    distance_m: float | None = Field(default=None, alias="distanceM", ge=0)
+
+
+@app.post("/api/ai/route-status", dependencies=[Depends(verify_api_key)])
+async def route_status(body: RouteStatus):
+    """updateRouteStatus: 백엔드 → AI. 경로 이탈(deviated=true)·재진입 또는 경로 수정(false)이 바뀔 때만 보낸다."""
+    at_ms = int(body.at.timestamp() * 1000) if body.at else None
+    state = route_store.set(body.session_id, body.deviated, at_ms, body.distance_m)
+    log.info("route-status session=%s deviated=%s distance_m=%s -> %s",
+             body.session_id, body.deviated, body.distance_m, state["status"])
+    return {"sessionId": body.session_id, "deviated": state["deviated"], "since": state["since"],
+            "distanceM": state["distance_m"]}
 
 
 async def read_upload(f: UploadFile) -> bytes:

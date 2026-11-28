@@ -66,10 +66,15 @@ def signals_of(whisper: dict | None, yamnet: dict | None, loudness: dict | None 
 
 
 def combine(whisper: dict | None, yamnet: dict | None, speaker: dict | None = None,
-            loudness: dict | None = None, motion: dict | None = None) -> dict:
-    """신호별 결과 → {risk_score, risk_type, is_danger, signals}. speaker가 있으면 실제로 더한 값을 speaker["applied"]에 적는다."""
-    if speaker is not None:
-        speaker["applied"] = 0.0
+            loudness: dict | None = None, motion: dict | None = None, route: dict | None = None) -> dict:
+    """신호별 결과 → {risk_score, risk_type, is_danger, signals}.
+
+    speaker·route(경로 이탈)는 보조 신호: 혼자서는 위험을 만들지 않고, 다른 신호가 있을 때 조금 올린다.
+    실제로 더한 값을 각각 ["applied"]에 적는다.
+    """
+    for extra in (speaker, route):
+        if extra is not None:
+            extra["applied"] = 0.0
     found = sorted(signals_of(whisper, yamnet, loudness, motion), reverse=True)
     if not found:
         return {"risk_score": 0.0, "risk_type": None, "is_danger": False, "signals": []}
@@ -81,6 +86,10 @@ def combine(whisper: dict | None, yamnet: dict | None, speaker: dict | None = No
     if speaker and speaker.get("status") == "ok" and speaker.get("boost", 0) > 0 and score >= config.VERIFY_BOOST_MIN_BASE:
         boosted = min(1.0, score + speaker["boost"])
         speaker["applied"] = round(boosted - score, 4)
+        score = boosted
+    if route and route.get("deviated") and config.ROUTE_BOOST > 0 and score >= config.ROUTE_BOOST_MIN_BASE:
+        boosted = min(1.0, score + config.ROUTE_BOOST)
+        route["applied"] = round(boosted - score, 4)
         score = boosted
     is_danger = score >= config.RISK_THRESHOLD
     return {
