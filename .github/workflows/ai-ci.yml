@@ -23,7 +23,7 @@ jobs:
             requirements.txt
             requirements-dev.txt
       - name: Install test dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt librosa
       - name: Run tests in dummy mode
         env:
           AI_LOAD_MODELS: '0'
