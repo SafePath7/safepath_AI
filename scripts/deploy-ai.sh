@@ -24,7 +24,7 @@ docker inspect safepath-ai >/dev/null
 docker inspect safepath-ai | python3 -c '
 import json, sys
 c = json.load(sys.stdin)[0]
-allowed = {"AI_LOAD_MODELS", "AI_MODEL_CACHE_DIR", "HF_HOME", "PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "PYTHONUNBUFFERED"}
+allowed = {"AI_LOAD_MODELS", "AI_MODEL_CACHE_DIR", "HF_HOME", "AI_BACKEND_URL", "AI_BACKEND_KEY", "SSL_CERT_FILE", "NO_PROXY", "PATH", "LANG", "GPG_KEY", "PYTHON_VERSION", "PYTHON_SHA256", "PYTHONUNBUFFERED"}
 unexpected = [e.split("=", 1)[0] for e in c["Config"]["Env"] if e.split("=", 1)[0] not in allowed]
 if unexpected:
     print("Additional container settings require review:", ", ".join(unexpected), file=sys.stderr)
@@ -33,6 +33,16 @@ if unexpected:
 if docker inspect safepath-ai-previous >/dev/null 2>&1; then
   echo 'Previous rollback container exists; resolve it before deploying' >&2
   exit 1
+fi
+extra_args=()
+if [[ -f /etc/safepath/ai-backend.env ]]; then
+  [[ -f /etc/safepath/ai-trust-bundle.pem ]] || { echo 'AI backend TLS trust bundle missing' >&2; exit 1; }
+  extra_args+=(--env-file /etc/safepath/ai-backend.env --mount type=bind,src=/etc/safepath/ai-trust-bundle.pem,dst=/run/safepath/ca-bundle.pem,readonly)
+else
+  if docker inspect safepath-ai --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^AI_BACKEND_URL='; then
+    echo 'Existing backend settings would be lost; stopping' >&2
+    exit 1
+  fi
 fi
 docker stop safepath-ai
 if ! docker rename safepath-ai safepath-ai-previous; then
@@ -49,7 +59,7 @@ trap 'rollback; rm -rf "$tmp"' ERR
 docker run -d --name safepath-ai --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   -e AI_LOAD_MODELS=1 -e AI_MODEL_CACHE_DIR=/cache/models \
-  -e HF_HOME=/cache/huggingface -v safepath-model-cache:/cache "$image" >/dev/null
+  -e HF_HOME=/cache/huggingface -v safepath-model-cache:/cache "${extra_args[@]}" "$image" >/dev/null
 for attempt in $(seq 1 120); do
   if curl -fsS --max-time 3 http://127.0.0.1:8000/health | python3 -c \
     'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("status")=="ok" and d.get("mode")=="model" and {"whisper","yamnet","speaker"}.issubset(d.get("models_loaded",[])) else 1)' 2>/dev/null; then
